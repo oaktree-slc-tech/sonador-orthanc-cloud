@@ -1,0 +1,6 @@
+[submodule "sonador"]
+	path = sonador
+	url = https://code.oak-tree.tech/oak-tree/medical-imaging/sonador-client.git
+[submodule "client"]
+	path = client
+	url = https://code.oak-tree.tech/guru-labs/guru-client.git
