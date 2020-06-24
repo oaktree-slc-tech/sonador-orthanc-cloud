@@ -1,0 +1,3 @@
+# Client Dependencies and Secure API
+-r client/requirements.txt
+-r sonador/requirements.txt
