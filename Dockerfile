@@ -14,4 +14,4 @@ RUN --mount=type=secret,id=auto-devops-build-secrets . /run/secrets/auto-devops-
   && git clone https://code.oak-tree.tech/oak-tree/medical-imaging/orthanc-sonador.git \
   && cd orthanc-sonador && git checkout $CI_COMMIT_SHA \
   && git submodule update --init --recursive --remote \
-  && pip3 install -r requirements.txt
+  && pip3 install --timeout 30 -r requirements.txt
