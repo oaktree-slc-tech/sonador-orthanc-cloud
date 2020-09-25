@@ -1,3 +1,6 @@
 # Client Dependencies and Secure API
--r client/requirements.txt
--r sonador/requirements.txt
+git+https://code.oak-tree.tech/guru-labs/packages/guru-client.git
+git+https://code.oak-tree.tech/oak-tree/medical-imaging/packages/sonador.git
+
+# Data Streaming
+confluent-kafka==1.5.0
