@@ -3,7 +3,7 @@ FROM code.oak-tree.tech:5005/oak-tree/medical-imaging/imaging-development-env/or
 ARG CI_COMMIT_SHA
 
 # Install Python Requests Module
-RUN pip3 install requests
+RUN apt-get install -y python3-requests
 
 # Install Sonador Python Plugin
 RUN mkdir -p /opt/orthanc/
@@ -14,4 +14,4 @@ RUN --mount=type=secret,id=auto-devops-build-secrets . /run/secrets/auto-devops-
   && git clone https://code.oak-tree.tech/oak-tree/medical-imaging/orthanc-sonador.git \
   && cd orthanc-sonador && git checkout $CI_COMMIT_SHA \
   && git submodule update --init --recursive --remote \
-  && pip3 install --timeout 30 -r requirements.txt
+  && pip3 install --timeout 300 -r requirements.txt
