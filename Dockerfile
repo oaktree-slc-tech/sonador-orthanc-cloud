@@ -3,7 +3,7 @@ FROM code.oak-tree.tech:5005/oak-tree/medical-imaging/imaging-development-env/or
 ARG CI_COMMIT_SHA
 
 # Install Python Requests Module
-RUN apt-get install python3-requests
+RUN apt-get install -y python3-requests
 
 # Install Sonador Python Plugin
 RUN mkdir -p /opt/orthanc/
