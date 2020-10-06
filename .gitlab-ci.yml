@@ -47,7 +47,7 @@ publish-oaktree:
   - docker push $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/orthanc-sonador:latest
 
 
-  publish-docker:
+publish-docker:
   stage: deploy
   image: docker:19.03.8
   services:
