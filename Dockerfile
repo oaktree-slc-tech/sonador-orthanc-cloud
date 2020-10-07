@@ -1,8 +1,6 @@
 # syntax = docker/dockerfile:experimental
 FROM code.oak-tree.tech:5005/oak-tree/medical-imaging/imaging-development-env/orthanc-s3:latest
 ARG CI_COMMIT_SHA
-ENV http_proxy http://proxy-chain.xxx.com:911/
-ENV https_proxy http://proxy-chain.xxx.com:912/
 
 # Install Python Requests Module
 RUN apt-get install -y python3-requests
