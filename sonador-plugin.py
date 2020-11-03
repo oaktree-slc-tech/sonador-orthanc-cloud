@@ -139,15 +139,25 @@ def orthanc_kafka_export_instance_meta(dicom, instanceId):
 	'''	Export DICOM instance metadata to Kafka
 	'''
 	# Create message structure
+	idata = json.loads(dicom.GetInstanceSimplifiedJson())
 	mdata = {
 		'OrthancServerId': ORTHANC_SONADOR_SERVERID,
 		'Resource': 'Instance',
+		'ID': instanceId, 
 		'Source': 'DCM' if dicom.GetInstanceOrigin() == orthanc.InstanceOrigin.DICOM_PROTOCOL \
 			else 'REST' if dicom.GetInstanceOrigin() == orthanc.InstanceOrigin.REST_API \
 			else None,
-		'ID': instanceId,
-		'DCM': json.loads(dicom.GetInstanceSimplifiedJson()),
+		'DCM': idata,
 	}
+
+	# Move patient, study, and series identifiers to the top-level
+	if idata.get('PatientID'):
+		mdata['PatientID'] = idata.get('PatientID')
+	if idata.get('StudyID'):
+		mdata['StudyID'] = idata.get('StudyID')
+	if idata.get('SeriesInstanceUID'):
+		mdata['SeriesInstanceUID'] = idata.get('SeriesInstanceUID')
+	
 	orthanc.LogInfo('JSON data for DICOM instance:\n%r' % mdata)
 
 	# Send to Kafka
