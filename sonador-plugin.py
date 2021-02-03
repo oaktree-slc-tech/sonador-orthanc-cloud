@@ -96,7 +96,11 @@ def sonador_configuration(timer_schedule=TIMER_10MIN):
 		# Update local server configuration once remote data has
 		for dcm in iserver.dicom_modalities:
 			orthanc.RestApiPut(posixpath.join('/modalities', dcm.orthanc_name), 
-				json.dumps({ 'AET': dcm.aet, 'Port': dcm.port, 'Host': dcm.host }))
+				json.dumps({
+					'AET': dcm.aet, 'Port': dcm.port, 'Host': dcm.host,
+					'AllowEcho': dcm.acl_allow_echo, 'AllowFind': dcm.acl_allow_find,
+					'AllowGet': dcm.acl_allow_get, 'AllowMove': dcm.acl_allow_move, 'AllowStore': dcm.acl_allow_store
+				}))
 		
 		# Configuration DICOMweb servers
 		orthanc.LogInfo('Configure DICOMweb remotes: %s' % ', '.join(
