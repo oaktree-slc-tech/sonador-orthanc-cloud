@@ -3,7 +3,9 @@ FROM oaktreetech/orthanc-s3
 ARG CI_COMMIT_SHA
 
 # Install Python Requests Module
-RUN apt-get install -y python3-requests
+RUN apt-get install -y python3-requests libtiff5-dev libjpeg-dev zlib1g-dev \
+  libfreetype6-dev liblcms2-dev libwebp-dev libharfbuzz-dev libfribidi-dev \
+  tcl8.6-dev tk8.6-dev python-tk
 
 # Install Sonador Python Plugin
 RUN mkdir -p /opt/orthanc/
