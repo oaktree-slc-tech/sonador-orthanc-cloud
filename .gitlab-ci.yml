@@ -30,7 +30,6 @@ publish-oaktree:
   services:
   - docker:19.03.8-dind
   variables:
-    DOCKER_HOST: "tcp://docker:2375"
     DOCKER_TLS_CERTDIR: ""
   
   only:
@@ -53,7 +52,6 @@ publish-docker:
   services:
   - docker:19.03.8-dind
   variables:
-    DOCKER_HOST: "tcp://docker:2375"
     DOCKER_TLS_CERTDIR: ""
   
   only:
