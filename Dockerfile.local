@@ -1,5 +1,5 @@
 # syntax = docker/dockerfile:experimental
-FROM code.oak-tree.tech:5005/oak-tree/medical-imaging/imaging-development-env/orthanc-s3:latest
+FROM oaktreetech/orthanc-s3:latest
 ARG CI_COMMIT_SHA
 
 # Install Python Requests Module

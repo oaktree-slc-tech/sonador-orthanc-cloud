@@ -21,6 +21,8 @@ KAFKA_TIMEOUT_DEFAULT = 10
 # Background timers 
 CONFIG_TIMER = None
 
+ORTHANC_DEFAULT_ENCODING = 'utf-8'
+
 
 orthanc.LogWarning('Sonador/Orthanc integration plugin enabled')
 
@@ -84,7 +86,7 @@ def sonador_configuration(timer_schedule=TIMER_10MIN):
 	# Ensure that the DICOMweb plugin is installed
 	orthanc.LogInfo('Sync Orthanc configuration from Sonador with local state')
 	rcheck = orthanc.RestApiGet('/plugins/dicom-web/')
-	dcweb_check = json.loads(rcheck.decode('utf-8') if isinstance(rcheck, six.binary_type) else rcheck)
+	dcweb_check = json.loads(rcheck.decode(ORTHANC_DEFAULT_ENCODING) if isinstance(rcheck, six.binary_type) else rcheck)
 	orthanc.LogInfo('DICOMweb plugin installed and active:\n%s' % dcweb_check)
 	
 	try:
@@ -92,6 +94,16 @@ def sonador_configuration(timer_schedule=TIMER_10MIN):
 		orthanc.LogInfo(
 			'Configure remote DICOM modalities: %s' % ', '.join(
 				"%s" % dcm.orthanc_name for dcm in iserver.dicom_modalities))
+
+		# Retrieve local modality list to compare with remote list
+		rmodlist = orthanc.RestApiGet('/modalities')
+		orthanc_local_modlist = set(json.loads(
+			rmodlist.decode(ORTHANC_DEFAULT_ENCODING) if isinstance(rmodlist, six.binary_type) else rmodlist))
+
+		# Remove modalities that are no longer active
+		for dmid in orthanc_local_modlist.difference(set(dcm.orthanc_name for dcm in iserver.dicom_modalities)):
+			orthanc.LogInfo('Modality %s no longer active, remove from server.' % dmid)
+			orthanc.RestApiDelete(posixpath.join('/modalities', dmid))
 		
 		# Update local server configuration once remote data has
 		for dcm in iserver.dicom_modalities:
