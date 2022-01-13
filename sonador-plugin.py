@@ -1,10 +1,19 @@
-import six, os, orthanc, json, logging, pprint, threading, requests, traceback, posixpath
+import six, os, json, logging, pprint, threading, requests, traceback, posixpath
+import orthanc
+import inspect, numbers
 
+from confluent_kafka import Producer
+
+from sonador.apisettings import IMAGING_SERVER_RESOURCE_IMAGE, IMAGING_SERVER_RESOURCE_SERIES, \
+	IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_PATIENT 
 from sonador.helpers import SonadorServer
 from sonador.remote import fetch_sonador_dataobject
 from sonador.servers import SonadorImagingServer
 
-from confluent_kafka import Producer
+from sonador_orthanc.apisettings import ORTHANC_SERVER_ID as KTAG_ORTHANC_SERVER_ID, \
+	ORTHANC_SERVER_RESOURCE as KTAG_ORTHANC_SERVER_RESOURCE, \
+	ORTHANC_SERVER_SOURCE as KTAG_ORTHANC_SERVER_SOURCE, \
+	ORTHANC_SERVER_DICOM as KTAG_ORTHANC_SERVER_DICOM
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +77,7 @@ if CONF_KAFKA and CONF_KAFKA.get('servers'):
 	KAFKA_PRODUCER = Producer({ 'bootstrap.servers': KAFKA_SERVERS })
 
 else: KAFKA_PRODUCER = None
+
 
 
 # Sonador/Orthanc Integration: manage configured DICOM modalities and DICOMweb remotes
@@ -157,13 +167,13 @@ def orthanc_kafka_export_instance_meta(dicom, instanceId):
 	# Create message structure
 	idata = json.loads(dicom.GetInstanceSimplifiedJson())
 	mdata = {
-		'OrthancServerId': ORTHANC_SONADOR_SERVERID,
-		'Resource': 'Instance',
+		KTAG_ORTHANC_SERVER_ID: ORTHANC_SONADOR_SERVERID,
+		KTAG_ORTHANC_SERVER_RESOURCE: 'Instance',
 		'ID': instanceId, 
-		'Source': 'DCM' if dicom.GetInstanceOrigin() == orthanc.InstanceOrigin.DICOM_PROTOCOL \
+		KTAG_ORTHANC_SERVER_SOURCE: 'DCM' if dicom.GetInstanceOrigin() == orthanc.InstanceOrigin.DICOM_PROTOCOL \
 			else 'REST' if dicom.GetInstanceOrigin() == orthanc.InstanceOrigin.REST_API \
 			else None,
-		'DCM': idata,
+		KTAG_ORTHANC_SERVER_DICOM: idata,
 	}
 
 	# Move patient, study, and series identifiers to the top-level
@@ -175,6 +185,44 @@ def orthanc_kafka_export_instance_meta(dicom, instanceId):
 		mdata['SeriesInstanceUID'] = idata.get('SeriesInstanceUID')
 	
 	orthanc.LogInfo('JSON data for DICOM instance:\n%r' % mdata)
+
+	# Send to Kafka
+	KAFKA_PRODUCER.produce(KAFKA_TOPIC, json.dumps(mdata), callback=orthanc_kafka_delivery_report)
+
+
+def orthanc_kafka_onstable_resource(changeType, level, resource):
+	'''	Export data to Kafka about the DICOM resource marked as stable
+	'''
+	mdata = {
+		KTAG_ORTHANC_SERVER_ID: ORTHANC_SONADOR_SERVERID,
+		'ID': resource,
+	}
+
+	# Patient	
+	if changeType == orthanc.ChangeType.STABLE_PATIENT:
+		mdata[KTAG_ORTHANC_SERVER_RESOURCE] = IMAGING_SERVER_RESOURCE_PATIENT
+		rdata = json.loads(orthanc.RestApiGet('/patients/%s' % resource))
+
+	# Study
+	elif changeType == orthanc.ChangeType.STABLE_STUDY:
+		mdata[KTAG_ORTHANC_SERVER_RESOURCE] = IMAGING_SERVER_RESOURCE_STUDY
+		rdata = json.loads(orthanc.RestApiGet('/studies/%s' % resource))
+
+	# Series
+	elif changeType == orthanc.ChangeType.STABLE_SERIES:
+		mdata[KTAG_ORTHANC_SERVER_RESOURCE] = IMAGING_SERVER_RESOURCE_SERIES
+		rdata = json.loads(orthanc.RestApiGet('/series/%s' % resource))
+
+	# Add resource data to the message
+	mdata[KTAG_ORTHANC_SERVER_DICOM] = rdata
+
+	# Move patient, study, and series identifiers to the top-level
+	if rdata.get('PatientID'):
+		mdata['PatientID'] = rdata.get('PatientID')
+	if rdata.get('StudyID'):
+		mdata['StudyID'] = rdata.get('StudyID')
+	if rdata.get('SeriesInstanceUID'):
+		mdata['SeriesInstanceUID'] = rdata.get('SeriesInstanceUID')
 
 	# Send to Kafka
 	KAFKA_PRODUCER.produce(KAFKA_TOPIC, json.dumps(mdata), callback=orthanc_kafka_delivery_report)
@@ -247,6 +295,12 @@ def orthanc_sonador_onchange(changeType, level, resource):
 		if CONFIG_TIMER != None:
 			orthanc.LogWarning('Stop Sonador/Orthanc configuration scheduler')
 			CONFIG_TIMER.cancel()
+
+	# Resource Marked as Stable
+	elif changeType in (
+			orthanc.ChangeType.STABLE_PATIENT, orthanc.ChangeType.STABLE_STUDY, orthanc.ChangeType.STABLE_SERIES):
+		if KAFKA_PRODUCER != None:
+			orthanc_kafka_onstable_resource(changeType, level, resource)
 
 
 def orthanc_sonador_onstoredinstance(dicom, instanceId):
