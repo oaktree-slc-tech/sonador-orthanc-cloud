@@ -1,4 +1,5 @@
 # Client Dependencies and Secure API
+numpy<1.22.0
 git+https://code.oak-tree.tech/guru-labs/packages/guru-client.git
 git+https://code.oak-tree.tech/oak-tree/medical-imaging/packages/sonador.git
 
