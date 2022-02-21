@@ -29,6 +29,8 @@ docker-gcp-build:
     CI_APPLICATION_TAG: "orthanc-sonador-gcp"
   rules:
   - if: '$CI_COMMIT_BRANCH == "master"'
+  script:
+    - "docker build -f Dockerfile.gcp -t orthanc-sonador-gcp"
 
 docker-gcp-review:
   extends: .ci:stage:build
