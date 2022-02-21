@@ -19,7 +19,7 @@ RUN hg clone https://hg.orthanc-server.com/orthanc-object-storage \
 
 FROM osimis/orthanc
 
-COPY --from=build /orthanc-gcs/libOrthancGoogleCloudStorage.so /usr/share/orthanc/plugins/
+COPY --from=build /orthanc-gcs/build/google/libOrthancGoogleCloudStorage.so /usr/share/orthanc/plugins/
 
 ARG CI_COMMIT_SHA
 
