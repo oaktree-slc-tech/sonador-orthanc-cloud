@@ -26,7 +26,7 @@ docker-gcp-build:
   extends: .ci:stage:build
   variables: 
     DOCKERFILE_PATH: "Dockerfile.gcp"
-    CI_APPLICATION_TAG: "${CI_APPLICATION_TAG}"
+    CI_APPLICATION_TAG: "$CI_APPLICATION_TAG.gcp"
   rules:
   - if: '$CI_COMMIT_BRANCH == "master"'
 
@@ -34,7 +34,7 @@ docker-gcp-review:
   extends: .ci:stage:build
   variables: 
     DOCKERFILE_PATH: "Dockerfile.gcp"
-    CI_APPLICATION_TAG: "${CI_APPLICATION_TAG}.gcp"
+    CI_APPLICATION_TAG: "$CI_APPLICATION_TAG.gcp"
   rules:
   - if: $CI_MERGE_REQUEST_IID
   - if: $CI_COMMIT_TAG
