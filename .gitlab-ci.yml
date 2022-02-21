@@ -60,8 +60,8 @@ publish-gcp-oaktree:
   script:
   - echo "$DOCKER_PUBLISH_PASSWORD" | docker login -u "$DOCKER_PUBLISH_USER" --password-stdin "$CI_REGISTRY"
   - docker pull $CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG:$CI_COMMIT_SHA
-  - docker tag $CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG:$CI_COMMIT_SHA $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/
-  - docker push $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/
+  - docker tag $CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG:$CI_COMMIT_SHA $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/orthanc-sonador-gcp:latest
+  - docker push $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/orthanc-sonador-gcp:latest
 
 # Publish Docker Image to Imaging Environment Registry
 publish-oaktree:
