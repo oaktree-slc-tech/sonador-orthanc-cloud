@@ -22,6 +22,44 @@ docker-review:
   - if: $CI_COMMIT_TAG
   - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
 
+docker-gcp-build:
+  extends: .ci:stage:build
+  variables: 
+    DOCKERFILE_PATH: "Dockerfile.gcp"
+    CI_APPLICATION_TAG: "${CI_APPLICATION_TAG}.gcp"
+  rules:
+  - if: '$CI_COMMIT_BRANCH == "master"'
+
+docker-gcp-review:
+  extends: .ci:stage:build
+  variables: 
+    DOCKERFILE_PATH: "Dockerfile.gcp"
+    CI_APPLICATION_TAG: "${CI_APPLICATION_TAG}.gcp"
+  rules:
+  - if: $CI_MERGE_REQUEST_IID
+  - if: $CI_COMMIT_TAG
+  - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+publish-gcp-oaktree:
+  stage: deploy
+  image: docker:19.03.8
+  services:
+  - docker:19.03.8-dind
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+  
+  only:
+    refs:
+    - master
+    variables:
+    - $DOCKER_PUBLISH_PASSWORD
+    - $DOCKER_PUBLISH_USER
+  
+  script:
+  - echo "$DOCKER_PUBLISH_PASSWORD" | docker login -u "$DOCKER_PUBLISH_USER" --password-stdin "$CI_REGISTRY"
+  - docker pull $CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG:$CI_COMMIT_SHA
+  - docker tag $CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG:$CI_COMMIT_SHA $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/$CI_APPLICATION_TAG
+  - docker push $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/$CI_APPLICATION_TAG
 
 # Publish Docker Image to Imaging Environment Registry
 publish-oaktree:
