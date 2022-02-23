@@ -35,6 +35,7 @@ docker-gcp-build:
     - docker tag orthanc-sonador-gcp:latest $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/orthanc-sonador:gcp
     - echo "$DOCKER_PUBLISH_PASSWORD" | docker login -u "$DOCKER_PUBLISH_USER" --password-stdin "$CI_REGISTRY"
     - docker push $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/orthanc-sonador:gcp
+    - docker push orthanc-sonador-gcp:latest registry.oak-tree.tech/oak-tree/medical-imaging/orthanc-sonador
 
 # Publish Docker Image to Imaging Environment Registry
 publish-oaktree:
