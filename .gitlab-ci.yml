@@ -32,9 +32,13 @@ docker-gcp-build:
   - if: '$CI_COMMIT_BRANCH == "master"'
   script:
     - docker build -f Dockerfile.gcp -t orthanc-sonador-gcp .
-    - docker tag orthanc-sonador-gcp:latest $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/orthanc-sonador:latest
+    - docker tag orthanc-sonador-gcp:latest $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/orthanc-sonador:gcp
     - echo "$DOCKER_PUBLISH_PASSWORD" | docker login -u "$DOCKER_PUBLISH_USER" --password-stdin "$CI_REGISTRY"
     - docker push $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/orthanc-sonador:gcp
+    - echo "$DOCKER_HUB_SERVICE_PASSWORD" | docker login -u "$DOCKER_HUB_SERVICE_USER" --password-stdin
+    - docker tag $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/orthanc-sonador:gcp oaktreetech/orthanc-sonador:gcp
+    - docker push oaktreetech/orthanc-sonador:gcp
+
 
 # Publish Docker Image to Imaging Environment Registry
 publish-oaktree:
