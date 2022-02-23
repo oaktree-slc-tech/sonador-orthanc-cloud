@@ -27,43 +27,19 @@ docker-gcp-build:
   variables: 
     DOCKERFILE_PATH: "Dockerfile.gcp"
     CI_APPLICATION_TAG: "orthanc-sonador-gcp"
+    DOCKER_TLS_CERTDIR: ""
   rules:
   - if: '$CI_COMMIT_BRANCH == "master"'
-  script:
-    - "docker build -f Dockerfile.gcp -t orthanc-sonador:gcp ."
-
-docker-gcp-review:
-  extends: .ci:stage:build
-  variables: 
-    DOCKERFILE_PATH: "Dockerfile.gcp"
-    CI_APPLICATION_TAG: "orthanc-sonador:gcp"
-  rules:
-  - if: $CI_MERGE_REQUEST_IID
-  - if: $CI_COMMIT_TAG
-  - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-
-publish-gcp-oaktree:
-  stage: deploy
-  image: docker:19.03.8
-  services:
-  - docker:19.03.8-dind
-  variables:
-    DOCKER_TLS_CERTDIR: ""
-    DOCKERFILE_PATH: "Dockerfile.gcp"
-    CI_APPLICATION_TAG: "orthanc-sonador:gcp"
-  
   only:
     refs:
     - master
     variables:
     - $DOCKER_PUBLISH_PASSWORD
     - $DOCKER_PUBLISH_USER
-  
   script:
-  - echo "$DOCKER_PUBLISH_PASSWORD" | docker login -u "$DOCKER_PUBLISH_USER" --password-stdin "$CI_REGISTRY"
-  - docker pull $CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG:$CI_COMMIT_SHA
-  - docker tag $CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG:$CI_COMMIT_SHA $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/orthanc-sonador:gcp
-  - docker push $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/orthanc-sonador:gcp
+    - docker build -f Dockerfile.gcp -t $CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG:$CI_COMMIT_SHA $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/orthanc-sonador:gcp .
+    - echo "$DOCKER_PUBLISH_PASSWORD" | docker login -u "$DOCKER_PUBLISH_USER" --password-stdin "$CI_REGISTRY"
+    - docker push $CI_REGISTRY/oak-tree/medical-imaging/imaging-development-env/orthanc-sonador:gcp
 
 # Publish Docker Image to Imaging Environment Registry
 publish-oaktree:
