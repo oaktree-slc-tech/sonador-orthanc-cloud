@@ -1,7 +1,9 @@
+--extra-index-url https://code.oak-tree.tech/api/v4/projects/335/packages/pypi/simple
+
 # Client Dependencies and Secure API
 numpy<1.22.0
-git+https://code.oak-tree.tech/guru-labs/packages/guru-client.git
-git+https://code.oak-tree.tech/oak-tree/medical-imaging/packages/sonador.git
+client
+sonador
 
 # Data Streaming
 confluent-kafka==1.5.0
