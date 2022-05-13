@@ -1,7 +1,7 @@
 --extra-index-url https://code.oak-tree.tech/api/v4/projects/335/packages/pypi/simple
 
 # Client Dependencies and Secure API
-numpy
+numpy>=1.22.3
 client
 sonador
 
