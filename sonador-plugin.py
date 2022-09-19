@@ -1,67 +1,56 @@
 import six, os, json, logging, pprint, threading, requests, traceback, posixpath
-import orthanc
 import inspect, numbers
+import orthanc
 
 from confluent_kafka import Producer
 
+from client.errors import ConfigurationError
+
 from sonador.apisettings import IMAGING_SERVER_RESOURCE_IMAGE, IMAGING_SERVER_RESOURCE_SERIES, \
 	IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_PATIENT 
-from sonador.helpers import SonadorServer
 from sonador.remote import fetch_sonador_dataobject
-from sonador.servers import SonadorImagingServer
+from sonador.servers import SonadorServer, SonadorImagingServer
 
-from sonador_orthanc.apisettings import ORTHANC_SERVER_ID as KTAG_ORTHANC_SERVER_ID, \
+from sonador_orthanc.apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, \
+	ORTHANC_CONFIG_SECTION_POSTGRES, ORTHANC_CONFIG_SECTION_SONADOR, \
+	ORTHANC_SERVER_ID as KTAG_ORTHANC_SERVER_ID, \
 	ORTHANC_SERVER_RESOURCE as KTAG_ORTHANC_SERVER_RESOURCE, \
 	ORTHANC_SERVER_SOURCE as KTAG_ORTHANC_SERVER_SOURCE, \
-	ORTHANC_SERVER_DICOM as KTAG_ORTHANC_SERVER_DICOM
+	ORTHANC_SERVER_DICOM as KTAG_ORTHANC_SERVER_DICOM, \
+	ORTHANC_DEFAULT_ENCODING, \
+	SONADOR_RESOURCE_UPDATE_PATIENT, SONADOR_RESOURCE_UPDATE_STUDY, SONADOR_RESOURCE_UPDATE_SERIES, \
+	SONADOR_RESOURCE_DELETE_PATIENT, SONADOR_RESOURCE_DELETE_STUDY, SONADOR_RESOURCE_DELETE_SERIES
+from sonador_orthanc.helpers import init_sonador_server
+from sonador_orthanc.manager import SonadorServerManager, \
+	TIMER_30S, TIMER_MINUTE, TIMER_10MIN, TIMER_30MIN, TIMER_HOUR, TIMER_DAILY
 
 logger = logging.getLogger(__name__)
-
-TIMER_30S = 30
-TIMER_MINUTE = 60
-TIMER_10MIN = TIMER_MINUTE*10
-TIMER_30MIN = TIMER_MINUTE*30
-TIMER_HOUR = TIMER_MINUTE*60
-TIMER_DAILY = TIMER_HOUR*24
 
 KAFKA_TIMEOUT_DEFAULT = 10
 
 
-# Background timers 
+# Background timers
 CONFIG_TIMER = None
-
-ORTHANC_DEFAULT_ENCODING = 'utf-8'
 
 
 orthanc.LogWarning('Sonador/Orthanc integration plugin enabled')
 
+
 # Load configuration and extract API connection parameters
-# orthanc_config = orthanc.OrthancPluginGetConfiguration()
 CONF = json.loads(orthanc.GetConfiguration())
-CONF_SONADOR = CONF.get('Sonador', {})
+CONF_SONADOR = CONF.get(ORTHANC_CONFIG_SECTION_SONADOR, {})
+CONF_POSTGRESQL = CONF.get(ORTHANC_CONFIG_SECTION_POSTGRES, {})
+CONF_DICOMWEB = CONF.get(ORTHANC_CONFIG_SECTION_DICOMWEB, {})
+
 
 # Initialize Sonador API client and check that all required authentication
 # components are present (Sonador API clients should authenticate with API tokens)
 if not CONF_SONADOR:
 	raise ValueError('Invalid configuration, unable to locate Sonador section of configuration')
 
-# Connection URL
-if not CONF_SONADOR.get('SonadorUrl'):
-	raise ValueError('Invalid configuration, invalid Sonador URL')
+SONADOR_SERVER, ORTHANC_SONADOR_SERVERID = init_sonador_server(CONF_SONADOR)
+ORTHANC_SONADOR_MANGER = SonadorServerManager(SONADOR_SERVER, ORTHANC_SONADOR_SERVERID)
 
-# Access Credentials
-if not CONF_SONADOR.get('ApiToken'):
-	if not CONF_SONADOR.get('AccessId') or not CONF_SONADOR.get('SecretKey'):
-		raise ValueError('Invalid configuration, missing AccessID or Sonador secret key')
-
-# Orthanc Server ID
-ORTHANC_SONADOR_SERVERID = CONF_SONADOR.get('OrthancServerId')
-if not ORTHANC_SONADOR_SERVERID:
-	raise ValueError('Invalid configuration, please provide server ID for server instance from Sonador')
-
-# SSL verification
-VERIFY_SSL = CONF_SONADOR.get('VerifySSL', False)
-INTERNAL_DNS = CONF_SONADOR.get('InternalDns', False)
 
 # Kafka Configuration
 CONF_KAFKA = CONF_SONADOR.get('Kafka', {})
@@ -82,235 +71,363 @@ else: KAFKA_PRODUCER = None
 
 # Sonador/Orthanc Integration: manage configured DICOM modalities and DICOMweb remotes
 
-SONADOR_SERVER = SonadorServer(
-	CONF_SONADOR.get('SonadorUrl'), CONF_SONADOR.get('AccessId'), CONF_SONADOR.get('SecretKey'),
-	apitoken=CONF_SONADOR.get('ApiToken'), verify=VERIFY_SSL, internal_dns=INTERNAL_DNS)
+
+# Initialize PostgreSQL Database Connections and Sonador Tables
+if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
+
+	from sonador_orthanc.helpers import init_postgresdb_conn
+	from sonador_orthanc.db.base import DbBase, AutoDbBase
+
+	# Initialize database connection
+	ORTHANC_SQLENGINE, OrthancSession = init_postgresdb_conn(CONF_POSTGRESQL)
+	DbBase.metadata.create_all(bind=ORTHANC_SQLENGINE, checkfirst=True)
+	AutoDbBase.prepare(autoload_with=ORTHANC_SQLENGINE)
+
+else:
+	ORTHANC_SQLENGINE = OrthancSession = None
 
 
-def sonador_configuration(timer_schedule=TIMER_10MIN):
-	'''	Retrieve configuration data from Sonador and update local cache
-	'''
-	global CONFIG_TIMER
-	CONFIG_TIMER = None
+# Retrieve Sonador configuration for the imaging server
+from sonador_orthanc.helpers import init_fetch_sonador_configuration_callback
 
-	# Ensure that the DICOMweb plugin is installed
-	orthanc.LogInfo('Sync Orthanc configuration from Sonador with local state')
-	rcheck = orthanc.RestApiGet('/plugins/dicom-web/')
-	dcweb_check = json.loads(rcheck.decode(ORTHANC_DEFAULT_ENCODING) if isinstance(rcheck, six.binary_type) else rcheck)
-	orthanc.LogInfo('DICOMweb plugin installed and active:\n%s' % dcweb_check)
-	
-	try:
-		iserver = SONADOR_SERVER.get_imageserver(ORTHANC_SONADOR_SERVERID)
-		orthanc.LogInfo(
-			'Configure remote DICOM modalities: %s' % ', '.join(
-				"%s" % dcm.orthanc_name for dcm in iserver.dicom_modalities))
+fetch_sonador_configuration = init_fetch_sonador_configuration_callback(ORTHANC_SONADOR_MANGER)
+ORTHANC_SONADOR_MANGER.register_recurring_task(TIMER_10MIN, fetch_sonador_configuration)
 
-		# Retrieve local modality list to compare with remote list
-		rmodlist = orthanc.RestApiGet('/modalities')
-		orthanc_local_modlist = set(json.loads(
-			rmodlist.decode(ORTHANC_DEFAULT_ENCODING) if isinstance(rmodlist, six.binary_type) else rmodlist))
 
-		# Remove modalities that are no longer active
-		for dmid in orthanc_local_modlist.difference(set(dcm.orthanc_name for dcm in iserver.dicom_modalities)):
-			orthanc.LogInfo('Modality %s no longer active, remove from server.' % dmid)
-			orthanc.RestApiDelete(posixpath.join('/modalities', dmid))
+
+# Orthanc Server Event Handlers
+
+if KAFKA_PRODUCER != None:
+
+	def orthanc_kafka_delivery_report(err, msg):
+		'''	The Kafka producer delivers data asyncrhnously. This function is the
+			callback by the Kafka client to indicate whether a message was delivered
+			successfully or with an error. For successful deliveries, "err" will be None.
+
+			@input err (exception, None for successful deliveries): Error report from the Kafka
+				Producer client.
+			@input msg (message instance): Message instance delivered to the Kafka broker
+		'''
+		if err is not None:
+			orthanc.LogError('Unable to deliver message to Kafka instance %s. Error: %s\n%s' 
+				% (err, KAFKA_SERVERS, msg.value()))
+			KAFKA_PRODUCER.produce(KAFKA_TOPIC, msg.value(), callback=orthanc_kafka_delivery_report)
+
+
+	def orthanc_kafka_export_instance_meta(dicom, instanceId):
+		'''	Export DICOM instance metadata to Kafka
+		'''
+		# Create message structure
+		idata = json.loads(dicom.GetInstanceSimplifiedJson())
+		mdata = {
+			KTAG_ORTHANC_SERVER_ID: ORTHANC_SONADOR_SERVERID,
+			KTAG_ORTHANC_SERVER_RESOURCE: 'Instance',
+			'ID': instanceId, 
+			KTAG_ORTHANC_SERVER_SOURCE: 'DCM' if dicom.GetInstanceOrigin() == orthanc.InstanceOrigin.DICOM_PROTOCOL \
+				else 'REST' if dicom.GetInstanceOrigin() == orthanc.InstanceOrigin.REST_API \
+				else None,
+			KTAG_ORTHANC_SERVER_DICOM: idata,
+		}
+
+		# Move patient, study, and series identifiers to the top-level
+		if idata.get('PatientID'):
+			mdata['PatientID'] = idata.get('PatientID')
+		if idata.get('StudyID'):
+			mdata['StudyID'] = idata.get('StudyID')
+		if idata.get('SeriesInstanceUID'):
+			mdata['SeriesInstanceUID'] = idata.get('SeriesInstanceUID')
 		
-		# Update local server configuration once remote data has
-		for dcm in iserver.dicom_modalities:
-			orthanc.RestApiPut(posixpath.join('/modalities', dcm.orthanc_name), 
-				json.dumps({
-					'AET': dcm.aet, 'Port': dcm.port, 'Host': dcm.host,
-					'AllowEcho': dcm.acl_allow_echo, 'AllowFind': dcm.acl_allow_find,
-					'AllowGet': dcm.acl_allow_get, 'AllowMove': dcm.acl_allow_move, 'AllowStore': dcm.acl_allow_store
-				}))
-		
-		# Configuration DICOMweb servers
-		orthanc.LogInfo('Configure DICOMweb remotes: %s' % ', '.join(
-			"%s" % dcmweb.orthanc_name for dcmweb in iserver.dicomweb_remotes))
-		for dcmweb in iserver.dicomweb_remotes:
-			rurl = iserver.orthanc_apiurl(posixpath.join('/dicom-web', 'servers', dcmweb.orthanc_name))
-			r = requests.put(rurl, json={
-				'Url': dcmweb.dicomweb_url, 'Username': dcmweb.username, 'Password': dcmweb.password,
-			}, headers=iserver.orthanc_request_headers())
+		orthanc.LogInfo('JSON data for DICOM instance:\n%r' % mdata)
 
-			if not r.ok:
-				raise ValueError('Unable to update DICOMweb configuration. Status code: %s. Request content:\n%s'
-					% (r.status_code ,r.content.decode('utf-8')))
-
-	except Exception as err:
-		orthanc.LogError('Unable to update Orthanc configuration from Sonador. Error: %s.\n%s' 
-			% (err, traceback.format_exc()))
-	
-	finally:
-		CONFIG_TIMER = threading.Timer(timer_schedule, sonador_configuration)
-		CONFIG_TIMER.start()
+		# Send to Kafka
+		KAFKA_PRODUCER.produce(KAFKA_TOPIC, json.dumps(mdata), callback=orthanc_kafka_delivery_report)
 
 
-def orthanc_kafka_delivery_report(err, msg):
-	'''	The Kafka producer delivers data asyncrhnously. This function is the
-		callback by the Kafka client to indicate whether a message was delivered
-		successfully or with an error. For successful deliveries, "err" will be None.
+	def orthanc_kafka_onstable_resource(changeType, level, resource):
+		'''	Export data to Kafka about the DICOM resource marked as stable
+		'''
+		mdata = {
+			KTAG_ORTHANC_SERVER_ID: ORTHANC_SONADOR_SERVERID,
+			'ID': resource,
+		}
 
-		@input err (exception, None for successful deliveries): Error report from the Kafka
-			Producer client.
-		@input msg (message instance): Message instance delivered to the Kafka broker
-	'''
-	if err is not None:
-		orthanc.LogError('Unable to deliver message to Kafka instance %s. Error: %s\n%s' 
-			% (err, KAFKA_SERVERS, msg.value()))
-		KAFKA_PRODUCER.produce(KAFKA_TOPIC, msg.value(), callback=orthanc_kafka_delivery_report)
+		# Patient	
+		if changeType == orthanc.ChangeType.STABLE_PATIENT:
+			mdata[KTAG_ORTHANC_SERVER_RESOURCE] = IMAGING_SERVER_RESOURCE_PATIENT
+			rdata = json.loads(orthanc.RestApiGet('/patients/%s' % resource))
 
+		# Study
+		elif changeType == orthanc.ChangeType.STABLE_STUDY:
+			mdata[KTAG_ORTHANC_SERVER_RESOURCE] = IMAGING_SERVER_RESOURCE_STUDY
+			rdata = json.loads(orthanc.RestApiGet('/studies/%s' % resource))
 
-def orthanc_kafka_export_instance_meta(dicom, instanceId):
-	'''	Export DICOM instance metadata to Kafka
-	'''
-	# Create message structure
-	idata = json.loads(dicom.GetInstanceSimplifiedJson())
-	mdata = {
-		KTAG_ORTHANC_SERVER_ID: ORTHANC_SONADOR_SERVERID,
-		KTAG_ORTHANC_SERVER_RESOURCE: 'Instance',
-		'ID': instanceId, 
-		KTAG_ORTHANC_SERVER_SOURCE: 'DCM' if dicom.GetInstanceOrigin() == orthanc.InstanceOrigin.DICOM_PROTOCOL \
-			else 'REST' if dicom.GetInstanceOrigin() == orthanc.InstanceOrigin.REST_API \
-			else None,
-		KTAG_ORTHANC_SERVER_DICOM: idata,
-	}
+		# Series
+		elif changeType == orthanc.ChangeType.STABLE_SERIES:
+			mdata[KTAG_ORTHANC_SERVER_RESOURCE] = IMAGING_SERVER_RESOURCE_SERIES
+			rdata = json.loads(orthanc.RestApiGet('/series/%s' % resource))
 
-	# Move patient, study, and series identifiers to the top-level
-	if idata.get('PatientID'):
-		mdata['PatientID'] = idata.get('PatientID')
-	if idata.get('StudyID'):
-		mdata['StudyID'] = idata.get('StudyID')
-	if idata.get('SeriesInstanceUID'):
-		mdata['SeriesInstanceUID'] = idata.get('SeriesInstanceUID')
-	
-	orthanc.LogInfo('JSON data for DICOM instance:\n%r' % mdata)
+		# Add resource data to the message
+		mdata[KTAG_ORTHANC_SERVER_DICOM] = rdata
 
-	# Send to Kafka
-	KAFKA_PRODUCER.produce(KAFKA_TOPIC, json.dumps(mdata), callback=orthanc_kafka_delivery_report)
+		# Move patient, study, and series identifiers to the top-level
+		if rdata.get('PatientID'):
+			mdata['PatientID'] = rdata.get('PatientID')
+		if rdata.get('StudyID'):
+			mdata['StudyID'] = rdata.get('StudyID')
+		if rdata.get('SeriesInstanceUID'):
+			mdata['SeriesInstanceUID'] = rdata.get('SeriesInstanceUID')
+
+		# Send to Kafka
+		KAFKA_PRODUCER.produce(KAFKA_TOPIC, json.dumps(mdata), callback=orthanc_kafka_delivery_report)
 
 
-def orthanc_kafka_onstable_resource(changeType, level, resource):
-	'''	Export data to Kafka about the DICOM resource marked as stable
-	'''
-	mdata = {
-		KTAG_ORTHANC_SERVER_ID: ORTHANC_SONADOR_SERVERID,
-		'ID': resource,
-	}
+	def kafka_message_flush(poll_timeout=KAFKA_TIMEOUT_DEFAULT):
+		'''	Flush messages to Kafka and retrieve transaction receipts
+		'''
+		try:
+			logger.info('Push Kafka messages to broker: %s' % KAFKA_SERVERS)
+			KAFKA_PRODUCER.poll(0)
 
-	# Patient	
-	if changeType == orthanc.ChangeType.STABLE_PATIENT:
-		mdata[KTAG_ORTHANC_SERVER_RESOURCE] = IMAGING_SERVER_RESOURCE_PATIENT
-		rdata = json.loads(orthanc.RestApiGet('/patients/%s' % resource))
+		except Exception as err:
+			logger.error('Unable to perform scheduled Kafka message flush due. Error: %s.\n%s'
+				% (err, traceback.format_exc()))
 
-	# Study
-	elif changeType == orthanc.ChangeType.STABLE_STUDY:
-		mdata[KTAG_ORTHANC_SERVER_RESOURCE] = IMAGING_SERVER_RESOURCE_STUDY
-		rdata = json.loads(orthanc.RestApiGet('/studies/%s' % resource))
+	def orthanc_kafka_onstart(changeType, level, resource):
+		'''	Initialize Orthanc/Kafka integration. Handle server state changes.
 
-	# Series
-	elif changeType == orthanc.ChangeType.STABLE_SERIES:
-		mdata[KTAG_ORTHANC_SERVER_RESOURCE] = IMAGING_SERVER_RESOURCE_SERIES
-		rdata = json.loads(orthanc.RestApiGet('/series/%s' % resource))
-
-	# Add resource data to the message
-	mdata[KTAG_ORTHANC_SERVER_DICOM] = rdata
-
-	# Move patient, study, and series identifiers to the top-level
-	if rdata.get('PatientID'):
-		mdata['PatientID'] = rdata.get('PatientID')
-	if rdata.get('StudyID'):
-		mdata['StudyID'] = rdata.get('StudyID')
-	if rdata.get('SeriesInstanceUID'):
-		mdata['SeriesInstanceUID'] = rdata.get('SeriesInstanceUID')
-
-	# Send to Kafka
-	KAFKA_PRODUCER.produce(KAFKA_TOPIC, json.dumps(mdata), callback=orthanc_kafka_delivery_report)
-
-
-def kafka_message_flush(timer_schedule=TIMER_30S, poll_timeout=KAFKA_TIMEOUT_DEFAULT):
-	'''	Flush messages to Kafka and retrieve transaction receipts
-	'''
-	global KAFKA_TIMER
-	KAFKA_TIMER = None
-
-	try:
-		orthanc.LogInfo('Push Kafka messages to broker: %s' % KAFKA_SERVERS)
-		KAFKA_PRODUCER.poll(0)
-	
-	except Exception as err:
-		orthanc.LogError('Unable to perform scheduled Kafka message flush due. Error: %s.\n%s'
-			% (err, traceback.format_exc()))
-	
-	finally:
-		KAFKA_TIMER = threading.Timer(poll_timeout, kafka_message_flush)
-		KAFKA_TIMER.start()
-
-
-
-# Plugin Initialization Event Handlers
-
-def orthanc_kafka_onchange(changeType, level, resource):
-	'''	Initialize Orthanc/Kafka integration. Handle server state changes.
-
-		@event: Initialize "poll" event loop to retrieve Kafka message receipts
-			and flush messages to the Kafka broker.
-		@event: Perform one final "flush" to allow for messages to be delieverd 
-			and report callbacks to be triggered.
-	'''
-
-	# Initialize Sonador Kafka agent
-	if changeType == orthanc.ChangeType.ORTHANC_STARTED:
+			@event: Initialize "poll" event loop to retrieve Kafka message receipts
+				and flush messages to the Kafka broker.
+			@event: Perform one final "flush" to allow for messages to be delieverd 
+				and report callbacks to be triggered.
+		'''
+		# Initialize Sonador Kafka agent	
 		orthanc.LogWarning('Start Orthanc/Kafka message scheduler')
 		kafka_message_flush()
 
-	# Stop Orthanc Kafka agent
-	elif changeType == orthanc.ChangeType.ORTHANC_STOPPED:
-		
-		# Cancel background scheduler
-		if KAFKA_TIMER != None:
-			orthanc.LogWarning('Stop Orthanc/Kafka message scheduler')
-			KAFKA_TIMER.cancel()
 
-		# Flush all pending messages
+	def orthanc_kafka_onstop(changeType, level, resource):
+		''' Turn off Orthanc/Kafka message scheduler and clear any pending messages
+		'''
+		# Stop Orthanc Kafka agent and flush all pending messages
+		orthanc.LogWarning('Stop Orthanc/Kafka message scheduler')
 		KAFKA_PRODUCER.flush()
 
 
-def orthanc_sonador_onchange(changeType, level, resource):
+	# Kafka start/stop callbacks
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		orthanc.ChangeType.ORTHANC_STARTED, orthanc_kafka_onstart)
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		orthanc.ChangeType.ORTHANC_STOPPED, orthanc_kafka_onstop)
+
+	# Stable patient, study, and series events
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		orthanc.ChangeType.STABLE_PATIENT, orthanc_kafka_onstable_resource)
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		orthanc.ChangeType.STABLE_STUDY, orthanc_kafka_onstable_resource)
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		orthanc.ChangeType.STABLE_SERIES, orthanc_kafka_onstable_resource)
+
+	# Kafka scheduled events
+	ORTHANC_SONADOR_MANGER.register_recurring_task(TIMER_30S, kafka_message_flush)
+
+	# Kafka storage callbacks
+	orthanc.RegisterOnStoredInstanceCallback(orthanc_kafka_export_instance_meta)
+
+
+
+# Server manager start/stop callbacks
+
+def orthanc_sonador_onstart(changeType, level, resource):
 	'''	Initialize Orthanc/Sonador inegration. Handle server state changes.
 
 		@event startup: Initialize the server configuration and background timers.
 		@event shutdown: Stop all background timers
 	'''
 	# Initialize Sonador remote configuration agent
-	if changeType == orthanc.ChangeType.ORTHANC_STARTED:
-		orthanc.LogWarning('Start Sonador/Orthanc configuration scheduler')
-		sonador_configuration()
-
-		if KAFKA_PRODUCER != None:
-			orthanc_kafka_onchange(changeType, level, resource)
-
-	# Stop Orthanc remote configuration agent
-	elif changeType == orthanc.ChangeType.ORTHANC_STOPPED:
-		if CONFIG_TIMER != None:
-			orthanc.LogWarning('Stop Sonador/Orthanc configuration scheduler')
-			CONFIG_TIMER.cancel()
-
-	# Resource Marked as Stable
-	elif changeType in (
-			orthanc.ChangeType.STABLE_PATIENT, orthanc.ChangeType.STABLE_STUDY, orthanc.ChangeType.STABLE_SERIES):
-		if KAFKA_PRODUCER != None:
-			orthanc_kafka_onstable_resource(changeType, level, resource)
+	orthanc.LogWarning('Start Sonador Server Manager scheduler')
+	try:
+		fetch_sonador_configuration()
+		ORTHANC_SONADOR_MANGER.start()
+	
+	except Exception as err:
+		logger.error('Unable to start Sonador server manager. Error:\n%s.\nTraceback:\n%s' 
+			% (err, traceback.format_exc()))
 
 
-def orthanc_sonador_onstoredinstance(dicom, instanceId):
-	'''	General on stored instance event handler. Manages state changes for
-		DICOM instances when they are committed to the backend storage.
+def orthanc_sonador_onstop(changeType, level, resource):
+	'''	Orthanc/Sonador integration teardown
 	'''
-	if KAFKA_PRODUCER != None:
-		orthanc_kafka_export_instance_meta(dicom, instanceId)
+	orthanc.LogWarning('Stop Sonador Server Manager scheduler')
+	ORTHANC_SONADOR_MANGER.stop()
 
 
-# Register callbacks
-orthanc.RegisterOnChangeCallback(orthanc_sonador_onchange)
-orthanc.RegisterOnStoredInstanceCallback(orthanc_sonador_onstoredinstance)
+ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+	orthanc.ChangeType.ORTHANC_STARTED, orthanc_sonador_onstart)
+ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+	orthanc.ChangeType.ORTHANC_STOPPED, orthanc_sonador_onstop)
+
+
+# Internal Sonador API REST endpoints
+
+# Server Change Events. 2022-0813: the Python plugin API only supports
+# "new" and "stable" change events. These endpoints provider trigger
+# methods for "update" and "delete" events. The endpoints are called via
+# a Lua script that implements the "update" and "delete" handlers.
+from sonador_orthanc.web.events import OrthancEventView
+
+orthanc.RegisterRestCallback('/sonador/internal/patient/change/(.*)', OrthancEventView.as_view(
+	servermanager=ORTHANC_SONADOR_MANGER, update_event_type=SONADOR_RESOURCE_UPDATE_PATIENT,
+	delete_event_type=SONADOR_RESOURCE_DELETE_PATIENT, resource_class=orthanc.ResourceType.PATIENT))
+orthanc.RegisterRestCallback('/sonador/internal/study/change/(.*)', OrthancEventView.as_view(
+	servermanager=ORTHANC_SONADOR_MANGER, update_event_type=SONADOR_RESOURCE_UPDATE_STUDY,
+	delete_event_type=SONADOR_RESOURCE_DELETE_STUDY, resource_class=orthanc.ResourceType.STUDY))
+orthanc.RegisterRestCallback('/sonador/internal/series/change/(.*)', OrthancEventView.as_view(
+	servermanager=ORTHANC_SONADOR_MANGER, update_event_type=SONADOR_RESOURCE_UPDATE_SERIES,
+	delete_event_type=SONADOR_RESOURCE_DELETE_SERIES, resource_class=orthanc.ResourceType.SERIES))
+
+
+
+# PostgreSQL Resource Cache: Enable API Routes and Resource Indexing
+
+if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
+
+	import sonador_orthanc.tasks.maintenance.cache as sonador_cache_maintenance
+	import sonador_orthanc.db.cache as sonador_cachedb
+
+	# Orthanc DICOM tags cache
+	from sonador_orthanc.helpers import orthanc_maindicom_tags
+	CACHE_DICOMTAGS = orthanc_maindicom_tags(CONF)
+
+	# Enable DICOMweb endpoint overrides
+	if CONF_DICOMWEB and CONF_DICOMWEB.get('Enable'):
+
+		import sonador_orthanc.web.dicomweb as sonador_dicomweb
+		DICOMWEB_ROOT = CONF_DICOMWEB.get('Root')
+
+		# Initialize cached DICOMweb study list endpoint
+		orthanc.RegisterRestCallback(posixpath.join(DICOMWEB_ROOT, 'studies'),
+			sonador_dicomweb.init_cached_studylist_endpoint_callback(CONF, OrthancSession))
+
+	# Cache Query Endpoints
+	from sonador_orthanc.web.study import CacheStudyQueryView
+	from sonador_orthanc.web.series import CacheSeriesQueryView
+	from sonador_orthanc.web.patient import CachePatientQueryView
+	
+	orthanc.RegisterRestCallback('/cache/studies', CacheStudyQueryView.as_view(
+		sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS))
+	orthanc.RegisterRestCallback('/cache/series', CacheSeriesQueryView.as_view(
+		sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS))
+	orthanc.RegisterRestCallback('/cache/patients', CachePatientQueryView.as_view(
+		sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS))
+
+	# Cache C-FIND handlers
+	from sonador_orthanc.tasks.find import DicomCacheCFindCallback
+
+	orthanc.RegisterFindCallback(DicomCacheCFindCallback.as_callback(
+		sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS))
+
+	# Cache Bulk Content Endpoints
+	from sonador_orthanc.web.bulk import CacheFetchBulkContentView
+
+	orthanc.RegisterRestCallback('/cache/tools/bulk-content',CacheFetchBulkContentView.as_view(
+		sessionmaker=OrthancSession))
+
+
+	# Initialize thread pool for index operations
+	from concurrent.futures import ThreadPoolExecutor as ThreadPool
+	CONF_SONADOR_CACHE = CONF_SONADOR.get('Cache', {})
+	CACHE_WORKERS = CONF_SONADOR_CACHE.get('CacheThreadsCount', 4)
+	tpool = ThreadPool(max_workers=CACHE_WORKERS)
+
+	
+	# Cache maintenance endpoints
+	import sonador_orthanc.web.cache as sonador_cache
+	orthanc.LogWarning('Register Sonador Resource Cache endpoints')
+
+	# Query cache status
+	orthanc.RegisterRestCallback('/cache/admin/status', sonador_cache.CacheStatusView.as_view(
+		sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession))
+
+	# Rebuild resource cache
+	orthanc.RegisterRestCallback('/cache/admin/rebuild', sonador_cache.AdminRebuildCacheView.as_view(
+		sonador_conn=SONADOR_SERVER, dbengine=ORTHANC_SQLENGINE, sessionmaker=OrthancSession, threadpool=tpool))
+
+	# Bulk index of patients, studies, series
+	orthanc.RegisterRestCallback('/cache/admin/index/patients', sonador_cache.CacheBulkIndexPatientView.as_view(
+		sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession, threadpool=tpool))
+	orthanc.RegisterRestCallback('/cache/admin/index/studies', sonador_cache.CacheBulkIndexStudyView.as_view(
+		sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession, threadpool=tpool))
+	orthanc.RegisterRestCallback('/cache/admin/index/series', sonador_cache.CacheBulkIndexSeriesView.as_view(
+		sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession, threadpool=tpool))
+
+	# Individual index of patients, studies, series
+	orthanc.RegisterRestCallback(
+		r'/cache/patients/([0-9a-fA-F]{8}\-?){5}/index', 
+		sonador_cache.CacheIndexResourceView.as_view(sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession,
+			resource_cachemodel=sonador_cachedb.CachePatient))
+	orthanc.RegisterRestCallback(
+		r'/cache/studies/([0-9a-fA-F]{8}\-?){5}/index', 
+		sonador_cache.CacheIndexResourceView.as_view(sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession,
+			resource_cachemodel=sonador_cachedb.CacheStudy))
+	orthanc.RegisterRestCallback(
+		r'/cache/series/([0-9a-fA-F]{8}\-?){5}/index', 
+		sonador_cache.CacheIndexResourceView.as_view(sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession,
+			resource_cachemodel=sonador_cachedb.CacheSeries))
+
+
+	# Cache indexing tasks
+
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		orthanc.ChangeType.NEW_PATIENT, 
+		sonador_cache_maintenance.cache_index_serverchange_callback(
+			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=False))
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		orthanc.ChangeType.STABLE_PATIENT,
+		sonador_cache_maintenance.cache_index_serverchange_callback(
+			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=True))
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		SONADOR_RESOURCE_UPDATE_PATIENT,
+		sonador_cache_maintenance.cache_index_serverchange_callback(
+			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=True))
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		SONADOR_RESOURCE_DELETE_PATIENT,
+		sonador_cache_maintenance.remove_cache_serverchange_callback(
+			SONADOR_SERVER, OrthancSession, sonador_cachedb.CachePatient))
+
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		orthanc.ChangeType.NEW_STUDY, 
+		sonador_cache_maintenance.cache_index_serverchange_callback(
+			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=False))
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		orthanc.ChangeType.STABLE_STUDY,
+		sonador_cache_maintenance.cache_index_serverchange_callback(
+			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=True))
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		SONADOR_RESOURCE_UPDATE_STUDY,
+		sonador_cache_maintenance.cache_index_serverchange_callback(
+			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=True))
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		SONADOR_RESOURCE_DELETE_STUDY,
+		sonador_cache_maintenance.remove_cache_serverchange_callback(
+			SONADOR_SERVER, OrthancSession, sonador_cachedb.CacheStudy))
+	
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		orthanc.ChangeType.NEW_SERIES, 
+		sonador_cache_maintenance.cache_index_serverchange_callback(
+			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=False))
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		orthanc.ChangeType.STABLE_SERIES,
+		sonador_cache_maintenance.cache_index_serverchange_callback(
+			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=True))
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		SONADOR_RESOURCE_UPDATE_SERIES,
+		sonador_cache_maintenance.cache_index_serverchange_callback(
+			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=True))
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		SONADOR_RESOURCE_DELETE_SERIES,
+		sonador_cache_maintenance.remove_cache_serverchange_callback(
+			SONADOR_SERVER, OrthancSession, sonador_cachedb.CacheSeries))
+
+	
+	
+	
