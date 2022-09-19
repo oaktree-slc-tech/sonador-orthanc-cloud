@@ -2,8 +2,14 @@
 
 # Client Dependencies and Secure API
 numpy>=1.22.3
-client
-sonador
+client>=0.2.3
+sonador>=0.3.0-alpha2
 
 # Data Streaming
 confluent-kafka==1.5.0
+
+# Database Cache
+psycopg2-binary==2.9.3
+SQLAlchemy==1.4.39
+sqlalchemy-json==0.5.0
+
