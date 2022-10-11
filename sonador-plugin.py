@@ -72,6 +72,13 @@ else: KAFKA_PRODUCER = None
 # Sonador/Orthanc Integration: manage configured DICOM modalities and DICOMweb remotes
 
 
+# Retrieve Sonador configuration for the imaging server
+from sonador_orthanc.helpers import init_fetch_sonador_configuration_callback
+
+fetch_sonador_configuration = init_fetch_sonador_configuration_callback(ORTHANC_SONADOR_MANGER)
+ORTHANC_SONADOR_MANGER.register_recurring_task(TIMER_10MIN, fetch_sonador_configuration)
+
+
 # Initialize PostgreSQL Database Connections and Sonador Tables
 if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 
@@ -80,18 +87,20 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 
 	# Initialize database connection
 	ORTHANC_SQLENGINE, OrthancSession = init_postgresdb_conn(CONF_POSTGRESQL)
-	DbBase.metadata.create_all(bind=ORTHANC_SQLENGINE, checkfirst=True)
-	AutoDbBase.prepare(autoload_with=ORTHANC_SQLENGINE)
+
+	
+	def orthanc_db_onstart(changeType, level, resource):
+		'''	Initialize database tables and AutoDb tables after server startup
+		'''
+		DbBase.metadata.create_all(bind=ORTHANC_SQLENGINE, checkfirst=True)
+		AutoDbBase.prepare(autoload_with=ORTHANC_SQLENGINE)
+
+	
+	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		orthanc.ChangeType.ORTHANC_STARTED, orthanc_db_onstart)
 
 else:
 	ORTHANC_SQLENGINE = OrthancSession = None
-
-
-# Retrieve Sonador configuration for the imaging server
-from sonador_orthanc.helpers import init_fetch_sonador_configuration_callback
-
-fetch_sonador_configuration = init_fetch_sonador_configuration_callback(ORTHANC_SONADOR_MANGER)
-ORTHANC_SONADOR_MANGER.register_recurring_task(TIMER_10MIN, fetch_sonador_configuration)
 
 
 
@@ -291,143 +300,146 @@ orthanc.RegisterRestCallback('/sonador/internal/series/change/(.*)', OrthancEven
 
 if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 
-	import sonador_orthanc.tasks.maintenance.cache as sonador_cache_maintenance
-	import sonador_orthanc.db.cache as sonador_cachedb
+	def orthanc_cache_onstart(changeType, level, resource):
+		'''	Initialize Sonador resource cache, endpoints, and scheduled tasks
+		'''
+		import sonador_orthanc.tasks.maintenance.cache as sonador_cache_maintenance
+		import sonador_orthanc.db.cache as sonador_cachedb
 
-	# Orthanc DICOM tags cache
-	from sonador_orthanc.helpers import orthanc_maindicom_tags
-	CACHE_DICOMTAGS = orthanc_maindicom_tags(CONF)
+		# Orthanc DICOM tags cache
+		from sonador_orthanc.helpers import orthanc_maindicom_tags
+		CACHE_DICOMTAGS = orthanc_maindicom_tags(CONF)
 
-	# Enable DICOMweb endpoint overrides
-	if CONF_DICOMWEB and CONF_DICOMWEB.get('Enable'):
+		# Enable DICOMweb endpoint overrides
+		if CONF_DICOMWEB and CONF_DICOMWEB.get('Enable'):
 
-		import sonador_orthanc.web.dicomweb as sonador_dicomweb
-		DICOMWEB_ROOT = CONF_DICOMWEB.get('Root')
+			import sonador_orthanc.web.dicomweb as sonador_dicomweb
+			DICOMWEB_ROOT = CONF_DICOMWEB.get('Root')
 
-		# Initialize cached DICOMweb study list endpoint
-		orthanc.RegisterRestCallback(posixpath.join(DICOMWEB_ROOT, 'studies'),
-			sonador_dicomweb.init_cached_studylist_endpoint_callback(CONF, OrthancSession))
+			# Initialize cached DICOMweb study list endpoint
+			orthanc.RegisterRestCallback(posixpath.join(DICOMWEB_ROOT, 'studies'),
+				sonador_dicomweb.init_cached_studylist_endpoint_callback(CONF, OrthancSession))
 
-	# Cache Query Endpoints
-	from sonador_orthanc.web.study import CacheStudyQueryView
-	from sonador_orthanc.web.series import CacheSeriesQueryView
-	from sonador_orthanc.web.patient import CachePatientQueryView
-	
-	orthanc.RegisterRestCallback('/cache/studies', CacheStudyQueryView.as_view(
-		sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS))
-	orthanc.RegisterRestCallback('/cache/series', CacheSeriesQueryView.as_view(
-		sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS))
-	orthanc.RegisterRestCallback('/cache/patients', CachePatientQueryView.as_view(
-		sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS))
+		# Cache Query Endpoints
+		from sonador_orthanc.web.study import CacheStudyQueryView
+		from sonador_orthanc.web.series import CacheSeriesQueryView
+		from sonador_orthanc.web.patient import CachePatientQueryView
+		
+		orthanc.RegisterRestCallback('/cache/studies', CacheStudyQueryView.as_view(
+			sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS))
+		orthanc.RegisterRestCallback('/cache/series', CacheSeriesQueryView.as_view(
+			sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS))
+		orthanc.RegisterRestCallback('/cache/patients', CachePatientQueryView.as_view(
+			sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS))
 
-	# Cache C-FIND handlers
-	from sonador_orthanc.tasks.find import DicomCacheCFindCallback
+		# Cache C-FIND handlers
+		from sonador_orthanc.tasks.find import DicomCacheCFindCallback
 
-	orthanc.RegisterFindCallback(DicomCacheCFindCallback.as_callback(
-		sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS))
+		orthanc.RegisterFindCallback(DicomCacheCFindCallback.as_callback(
+			sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS))
 
-	# Cache Bulk Content Endpoints
-	from sonador_orthanc.web.bulk import CacheFetchBulkContentView
+		# Cache Bulk Content Endpoints
+		from sonador_orthanc.web.bulk import CacheFetchBulkContentView
 
-	orthanc.RegisterRestCallback('/cache/tools/bulk-content',CacheFetchBulkContentView.as_view(
-		sessionmaker=OrthancSession))
-
-
-	# Initialize thread pool for index operations
-	from concurrent.futures import ThreadPoolExecutor as ThreadPool
-	CONF_SONADOR_CACHE = CONF_SONADOR.get('Cache', {})
-	CACHE_WORKERS = CONF_SONADOR_CACHE.get('CacheThreadsCount', 4)
-	tpool = ThreadPool(max_workers=CACHE_WORKERS)
-
-	
-	# Cache maintenance endpoints
-	import sonador_orthanc.web.cache as sonador_cache
-	orthanc.LogWarning('Register Sonador Resource Cache endpoints')
-
-	# Query cache status
-	orthanc.RegisterRestCallback('/cache/admin/status', sonador_cache.CacheStatusView.as_view(
-		sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession))
-
-	# Rebuild resource cache
-	orthanc.RegisterRestCallback('/cache/admin/rebuild', sonador_cache.AdminRebuildCacheView.as_view(
-		sonador_conn=SONADOR_SERVER, dbengine=ORTHANC_SQLENGINE, sessionmaker=OrthancSession, threadpool=tpool))
-
-	# Bulk index of patients, studies, series
-	orthanc.RegisterRestCallback('/cache/admin/index/patients', sonador_cache.CacheBulkIndexPatientView.as_view(
-		sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession, threadpool=tpool))
-	orthanc.RegisterRestCallback('/cache/admin/index/studies', sonador_cache.CacheBulkIndexStudyView.as_view(
-		sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession, threadpool=tpool))
-	orthanc.RegisterRestCallback('/cache/admin/index/series', sonador_cache.CacheBulkIndexSeriesView.as_view(
-		sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession, threadpool=tpool))
-
-	# Individual index of patients, studies, series
-	orthanc.RegisterRestCallback(
-		r'/cache/patients/([0-9a-fA-F]{8}\-?){5}/index', 
-		sonador_cache.CacheIndexResourceView.as_view(sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession,
-			resource_cachemodel=sonador_cachedb.CachePatient))
-	orthanc.RegisterRestCallback(
-		r'/cache/studies/([0-9a-fA-F]{8}\-?){5}/index', 
-		sonador_cache.CacheIndexResourceView.as_view(sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession,
-			resource_cachemodel=sonador_cachedb.CacheStudy))
-	orthanc.RegisterRestCallback(
-		r'/cache/series/([0-9a-fA-F]{8}\-?){5}/index', 
-		sonador_cache.CacheIndexResourceView.as_view(sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession,
-			resource_cachemodel=sonador_cachedb.CacheSeries))
+		orthanc.RegisterRestCallback('/cache/tools/bulk-content',CacheFetchBulkContentView.as_view(
+			sessionmaker=OrthancSession))
 
 
-	# Cache indexing tasks
+		# Initialize thread pool for index operations
+		from concurrent.futures import ThreadPoolExecutor as ThreadPool
+		CONF_SONADOR_CACHE = CONF_SONADOR.get('Cache', {})
+		CACHE_WORKERS = CONF_SONADOR_CACHE.get('CacheThreadsCount', 4)
+		tpool = ThreadPool(max_workers=CACHE_WORKERS)
+
+		
+		# Cache maintenance endpoints
+		import sonador_orthanc.web.cache as sonador_cache
+		orthanc.LogWarning('Register Sonador Resource Cache endpoints')
+
+		# Query cache status
+		orthanc.RegisterRestCallback('/cache/admin/status', sonador_cache.CacheStatusView.as_view(
+			sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession))
+
+		# Rebuild resource cache
+		orthanc.RegisterRestCallback('/cache/admin/rebuild', sonador_cache.AdminRebuildCacheView.as_view(
+			sonador_conn=SONADOR_SERVER, dbengine=ORTHANC_SQLENGINE, sessionmaker=OrthancSession, threadpool=tpool))
+
+		# Bulk index of patients, studies, series
+		orthanc.RegisterRestCallback('/cache/admin/index/patients', sonador_cache.CacheBulkIndexPatientView.as_view(
+			sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession, threadpool=tpool))
+		orthanc.RegisterRestCallback('/cache/admin/index/studies', sonador_cache.CacheBulkIndexStudyView.as_view(
+			sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession, threadpool=tpool))
+		orthanc.RegisterRestCallback('/cache/admin/index/series', sonador_cache.CacheBulkIndexSeriesView.as_view(
+			sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession, threadpool=tpool))
+
+		# Individual index of patients, studies, series
+		orthanc.RegisterRestCallback(
+			r'/cache/patients/([0-9a-fA-F]{8}\-?){5}/index', 
+			sonador_cache.CacheIndexResourceView.as_view(sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession,
+				resource_cachemodel=sonador_cachedb.CachePatient))
+		orthanc.RegisterRestCallback(
+			r'/cache/studies/([0-9a-fA-F]{8}\-?){5}/index', 
+			sonador_cache.CacheIndexResourceView.as_view(sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession,
+				resource_cachemodel=sonador_cachedb.CacheStudy))
+		orthanc.RegisterRestCallback(
+			r'/cache/series/([0-9a-fA-F]{8}\-?){5}/index', 
+			sonador_cache.CacheIndexResourceView.as_view(sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession,
+				resource_cachemodel=sonador_cachedb.CacheSeries))
+
+
+		# Cache indexing tasks
+
+		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+			orthanc.ChangeType.NEW_PATIENT, 
+			sonador_cache_maintenance.cache_index_serverchange_callback(
+				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=False))
+		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+			orthanc.ChangeType.STABLE_PATIENT,
+			sonador_cache_maintenance.cache_index_serverchange_callback(
+				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=True))
+		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+			SONADOR_RESOURCE_UPDATE_PATIENT,
+			sonador_cache_maintenance.cache_index_serverchange_callback(
+				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=True))
+		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+			SONADOR_RESOURCE_DELETE_PATIENT,
+			sonador_cache_maintenance.remove_cache_serverchange_callback(
+				SONADOR_SERVER, OrthancSession, sonador_cachedb.CachePatient))
+
+		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+			orthanc.ChangeType.NEW_STUDY, 
+			sonador_cache_maintenance.cache_index_serverchange_callback(
+				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=False))
+		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+			orthanc.ChangeType.STABLE_STUDY,
+			sonador_cache_maintenance.cache_index_serverchange_callback(
+				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=True))
+		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+			SONADOR_RESOURCE_UPDATE_STUDY,
+			sonador_cache_maintenance.cache_index_serverchange_callback(
+				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=True))
+		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+			SONADOR_RESOURCE_DELETE_STUDY,
+			sonador_cache_maintenance.remove_cache_serverchange_callback(
+				SONADOR_SERVER, OrthancSession, sonador_cachedb.CacheStudy))
+		
+		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+			orthanc.ChangeType.NEW_SERIES, 
+			sonador_cache_maintenance.cache_index_serverchange_callback(
+				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=False))
+		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+			orthanc.ChangeType.STABLE_SERIES,
+			sonador_cache_maintenance.cache_index_serverchange_callback(
+				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=True))
+		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+			SONADOR_RESOURCE_UPDATE_SERIES,
+			sonador_cache_maintenance.cache_index_serverchange_callback(
+				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=True))
+		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+			SONADOR_RESOURCE_DELETE_SERIES,
+			sonador_cache_maintenance.remove_cache_serverchange_callback(
+				SONADOR_SERVER, OrthancSession, sonador_cachedb.CacheSeries))
+
 
 	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
-		orthanc.ChangeType.NEW_PATIENT, 
-		sonador_cache_maintenance.cache_index_serverchange_callback(
-			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=False))
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
-		orthanc.ChangeType.STABLE_PATIENT,
-		sonador_cache_maintenance.cache_index_serverchange_callback(
-			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=True))
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
-		SONADOR_RESOURCE_UPDATE_PATIENT,
-		sonador_cache_maintenance.cache_index_serverchange_callback(
-			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=True))
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
-		SONADOR_RESOURCE_DELETE_PATIENT,
-		sonador_cache_maintenance.remove_cache_serverchange_callback(
-			SONADOR_SERVER, OrthancSession, sonador_cachedb.CachePatient))
-
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
-		orthanc.ChangeType.NEW_STUDY, 
-		sonador_cache_maintenance.cache_index_serverchange_callback(
-			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=False))
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
-		orthanc.ChangeType.STABLE_STUDY,
-		sonador_cache_maintenance.cache_index_serverchange_callback(
-			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=True))
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
-		SONADOR_RESOURCE_UPDATE_STUDY,
-		sonador_cache_maintenance.cache_index_serverchange_callback(
-			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=True))
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
-		SONADOR_RESOURCE_DELETE_STUDY,
-		sonador_cache_maintenance.remove_cache_serverchange_callback(
-			SONADOR_SERVER, OrthancSession, sonador_cachedb.CacheStudy))
-	
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
-		orthanc.ChangeType.NEW_SERIES, 
-		sonador_cache_maintenance.cache_index_serverchange_callback(
-			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=False))
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
-		orthanc.ChangeType.STABLE_SERIES,
-		sonador_cache_maintenance.cache_index_serverchange_callback(
-			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=True))
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
-		SONADOR_RESOURCE_UPDATE_SERIES,
-		sonador_cache_maintenance.cache_index_serverchange_callback(
-			SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=True))
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
-		SONADOR_RESOURCE_DELETE_SERIES,
-		sonador_cache_maintenance.remove_cache_serverchange_callback(
-			SONADOR_SERVER, OrthancSession, sonador_cachedb.CacheSeries))
-
-	
-	
-	
+		orthanc.ChangeType.ORTHANC_STARTED, orthanc_cache_onstart)
