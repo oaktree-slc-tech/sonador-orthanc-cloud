@@ -6,7 +6,8 @@ from sqlalchemy import or_, and_
 from client.errors import ConfigurationError
 from client.utils.object import omit, pick
 
-from sonador.apisettings import DCMHEADER_MODALITIES_IN_STUDY, DCMHEADER_SERIES_DATE, DCMHEADER_STUDY_DATE
+from sonador.apisettings import DCMHEADER_MODALITIES_IN_STUDY, DCMHEADER_SERIES_DATE, DCMHEADER_STUDY_DATE, \
+	DCMHEADER_MODALITY
 
 from ..db.cache import CachePatient, CacheStudy, CacheSeries
 
