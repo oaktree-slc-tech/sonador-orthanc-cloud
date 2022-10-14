@@ -49,7 +49,10 @@ if not CONF_SONADOR:
 	raise ValueError('Invalid configuration, unable to locate Sonador section of configuration')
 
 SONADOR_SERVER, ORTHANC_SONADOR_SERVERID = init_sonador_server(CONF_SONADOR)
-ORTHANC_SONADOR_MANGER = SonadorServerManager(SONADOR_SERVER, ORTHANC_SONADOR_SERVERID)
+ORTHANC_SONADOR_MANAGER = SonadorServerManager(SONADOR_SERVER, ORTHANC_SONADOR_SERVERID, conf=CONF_SONADOR)
+
+# Register/update Orthanc configuration with Sonador
+ORTHANC_SONADOR_MANAGER.register_server()
 
 
 # Kafka Configuration
@@ -75,8 +78,8 @@ else: KAFKA_PRODUCER = None
 # Retrieve Sonador configuration for the imaging server
 from sonador_orthanc.helpers import init_fetch_sonador_configuration_callback
 
-fetch_sonador_configuration = init_fetch_sonador_configuration_callback(ORTHANC_SONADOR_MANGER)
-ORTHANC_SONADOR_MANGER.register_recurring_task(TIMER_10MIN, fetch_sonador_configuration)
+fetch_sonador_configuration = init_fetch_sonador_configuration_callback(ORTHANC_SONADOR_MANAGER)
+ORTHANC_SONADOR_MANAGER.register_recurring_task(TIMER_10MIN, fetch_sonador_configuration)
 
 
 # Initialize PostgreSQL Database Connections and Sonador Tables
@@ -96,7 +99,7 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 		AutoDbBase.prepare(autoload_with=ORTHANC_SQLENGINE)
 
 	
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 		orthanc.ChangeType.ORTHANC_STARTED, orthanc_db_onstart)
 
 else:
@@ -223,21 +226,21 @@ if KAFKA_PRODUCER != None:
 
 
 	# Kafka start/stop callbacks
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 		orthanc.ChangeType.ORTHANC_STARTED, orthanc_kafka_onstart)
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 		orthanc.ChangeType.ORTHANC_STOPPED, orthanc_kafka_onstop)
 
 	# Stable patient, study, and series events
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 		orthanc.ChangeType.STABLE_PATIENT, orthanc_kafka_onstable_resource)
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 		orthanc.ChangeType.STABLE_STUDY, orthanc_kafka_onstable_resource)
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 		orthanc.ChangeType.STABLE_SERIES, orthanc_kafka_onstable_resource)
 
 	# Kafka scheduled events
-	ORTHANC_SONADOR_MANGER.register_recurring_task(TIMER_30S, kafka_message_flush)
+	ORTHANC_SONADOR_MANAGER.register_recurring_task(TIMER_30S, kafka_message_flush)
 
 	# Kafka storage callbacks
 	orthanc.RegisterOnStoredInstanceCallback(orthanc_kafka_export_instance_meta)
@@ -256,7 +259,7 @@ def orthanc_sonador_onstart(changeType, level, resource):
 	orthanc.LogWarning('Start Sonador Server Manager scheduler')
 	try:
 		fetch_sonador_configuration()
-		ORTHANC_SONADOR_MANGER.start()
+		ORTHANC_SONADOR_MANAGER.start()
 	
 	except Exception as err:
 		logger.error('Unable to start Sonador server manager. Error:\n%s.\nTraceback:\n%s' 
@@ -267,12 +270,12 @@ def orthanc_sonador_onstop(changeType, level, resource):
 	'''	Orthanc/Sonador integration teardown
 	'''
 	orthanc.LogWarning('Stop Sonador Server Manager scheduler')
-	ORTHANC_SONADOR_MANGER.stop()
+	ORTHANC_SONADOR_MANAGER.stop()
 
 
-ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 	orthanc.ChangeType.ORTHANC_STARTED, orthanc_sonador_onstart)
-ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 	orthanc.ChangeType.ORTHANC_STOPPED, orthanc_sonador_onstop)
 
 
@@ -285,13 +288,13 @@ ORTHANC_SONADOR_MANGER.register_serverchange_callback(
 from sonador_orthanc.web.events import OrthancEventView
 
 orthanc.RegisterRestCallback('/sonador/internal/patient/change/(.*)', OrthancEventView.as_view(
-	servermanager=ORTHANC_SONADOR_MANGER, update_event_type=SONADOR_RESOURCE_UPDATE_PATIENT,
+	servermanager=ORTHANC_SONADOR_MANAGER, update_event_type=SONADOR_RESOURCE_UPDATE_PATIENT,
 	delete_event_type=SONADOR_RESOURCE_DELETE_PATIENT, resource_class=orthanc.ResourceType.PATIENT))
 orthanc.RegisterRestCallback('/sonador/internal/study/change/(.*)', OrthancEventView.as_view(
-	servermanager=ORTHANC_SONADOR_MANGER, update_event_type=SONADOR_RESOURCE_UPDATE_STUDY,
+	servermanager=ORTHANC_SONADOR_MANAGER, update_event_type=SONADOR_RESOURCE_UPDATE_STUDY,
 	delete_event_type=SONADOR_RESOURCE_DELETE_STUDY, resource_class=orthanc.ResourceType.STUDY))
 orthanc.RegisterRestCallback('/sonador/internal/series/change/(.*)', OrthancEventView.as_view(
-	servermanager=ORTHANC_SONADOR_MANGER, update_event_type=SONADOR_RESOURCE_UPDATE_SERIES,
+	servermanager=ORTHANC_SONADOR_MANAGER, update_event_type=SONADOR_RESOURCE_UPDATE_SERIES,
 	delete_event_type=SONADOR_RESOURCE_DELETE_SERIES, resource_class=orthanc.ResourceType.SERIES))
 
 
@@ -389,57 +392,57 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 
 		# Cache indexing tasks
 
-		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			orthanc.ChangeType.NEW_PATIENT, 
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=False))
-		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			orthanc.ChangeType.STABLE_PATIENT,
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=True))
-		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			SONADOR_RESOURCE_UPDATE_PATIENT,
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=True))
-		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			SONADOR_RESOURCE_DELETE_PATIENT,
 			sonador_cache_maintenance.remove_cache_serverchange_callback(
 				SONADOR_SERVER, OrthancSession, sonador_cachedb.CachePatient))
 
-		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			orthanc.ChangeType.NEW_STUDY, 
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=False))
-		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			orthanc.ChangeType.STABLE_STUDY,
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=True))
-		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			SONADOR_RESOURCE_UPDATE_STUDY,
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=True))
-		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			SONADOR_RESOURCE_DELETE_STUDY,
 			sonador_cache_maintenance.remove_cache_serverchange_callback(
 				SONADOR_SERVER, OrthancSession, sonador_cachedb.CacheStudy))
 		
-		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			orthanc.ChangeType.NEW_SERIES, 
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=False))
-		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			orthanc.ChangeType.STABLE_SERIES,
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=True))
-		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			SONADOR_RESOURCE_UPDATE_SERIES,
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				SONADOR_SERVER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=True))
-		ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			SONADOR_RESOURCE_DELETE_SERIES,
 			sonador_cache_maintenance.remove_cache_serverchange_callback(
 				SONADOR_SERVER, OrthancSession, sonador_cachedb.CacheSeries))
 
 
-	ORTHANC_SONADOR_MANGER.register_serverchange_callback(
+	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 		orthanc.ChangeType.ORTHANC_STARTED, orthanc_cache_onstart)

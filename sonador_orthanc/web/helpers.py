@@ -14,7 +14,7 @@ def paginate_query_results(resources, offset: Union[int, None], limit: Union[int
 		@returns sqlalchemy.orm.query.Query
 	'''
 	# Both offset and limit defined
-	if offset and limit:
+	if offset is not None and limit:
 		return resources[offset:limit+offset]
 
 	# Offset without limit

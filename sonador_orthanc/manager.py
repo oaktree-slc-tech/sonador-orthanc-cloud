@@ -3,9 +3,12 @@ from concurrent.futures import ThreadPoolExecutor as ThreadPool
 
 import orthanc
 
-from client.errors import ConfigurationError
+from client import apisettings as capicodes
+from client.errors import ConfigurationError, ResourceDoesNotExist
+from client.utils.object import pick
 
-from sonador.servers import SonadorServer
+from sonador.servers import SonadorServer, SonadorImagingServer
+from sonador.remote import sonador_dataobject_create
 
 TIMER_30S = 30
 TIMER_MINUTE = 60
@@ -17,12 +20,29 @@ TIMER_DAILY = TIMER_HOUR*24
 logger = logging.getLogger(__name__)
 
 
+
+IMAGE_SERVER_CONFIG_TRANSFORMS = {
+	'OrthancServerScheme': 'scheme',
+	'OrthancServerHostname':  'hostname',
+	'OrthancServerPort': 'port',
+	'OrthancServerName': 'name',
+	'OrthancServerDescription':  'description',
+	'OrthancServerInternalScheme': 'internal_scheme',
+	'OrthancServerInternalHostname': 'internal_hostname',
+	'OrthancServerInternalPort': 'internal_port',
+	"OrthancServerActive": 'active',
+}
+
+
 class SonadorServerManager:
 	'''	Manages the integration between Sonador and Orthanc and provides methods for
 		scheduling recurring tasks, executing long-running operations, and invoking callbacks
 		on server changes.
 	'''
 	threads_count = 4
+	registration_delay = 30
+	retry_limit = 3
+	retry_interval = 30
 
 	def __init__(self, sonador_conn: SonadorServer, imageserver_id: str, 
 			threadpool=None, timers=None, changeCallbacks=None, **kwargs):
@@ -32,6 +52,13 @@ class SonadorServerManager:
 		self.imageserver_id = imageserver_id
 		self.threadpool = threadpool or ThreadPool(
 			max_workers=kwargs.get('threads_count', self.threads_count))
+		self.retry_limit = kwargs.get('retry_limit', self.retry_limit)
+		self.retry_interval = kwargs.get('retry_interval', self.retry_interval)
+
+		# Orthanc/Sonador configuration		
+		self.conf = kwargs.get('conf') or {}
+
+		# Manager state
 		self.running = False
 
 		# Recurring tasks and change event handlers
@@ -46,6 +73,78 @@ class SonadorServerManager:
 
 		# Register global onchange handler
 		orthanc.RegisterOnChangeCallback(server_onchange)
+
+	def shutdown_orthanc(self, *args, **kwargs):
+		'''	Shutdown the Orthanc instance by making a call to '/tools/shutdown'.
+		'''
+		return orthanc.RestApiPost('/tools/shutdown', '')
+
+	def register_server(self, *args, **kwargs):
+		''' Synchronize local server configuration with remote configuration on Sonador. If an entry
+			does not exit exist, it will be created.
+		'''
+		# Retry registration up to limit
+		retry = kwargs.get('retry', 0)
+		if retry < self.retry_limit:
+
+			try:
+
+				# Transform configuration to database schema
+				sdata = { 'uid': self.imageserver_id }
+				for ckey in IMAGE_SERVER_CONFIG_TRANSFORMS:
+					if self.conf.get(ckey):
+						sdata[IMAGE_SERVER_CONFIG_TRANSFORMS.get(ckey)] = self.conf.get(ckey)
+
+				# Retrieve and update image server entry
+				try:
+					iserver = self.server.get_imageserver(self.imageserver_id)
+					iserver = iserver.update(sdata)
+
+				# Create server entry if it does not exist
+				except ResourceDoesNotExist as err:
+					rdata = sonador_dataobject_create(self.server, SonadorImagingServer, sdata, verify=self.server.verify)
+
+					# Ensure that the Sonador assigned server ID matches the local server ID
+					if rdata.get(capicodes.UPDATE_URL):
+
+						# Parse server assigned ID from update URL, retrieve instance to ensure
+						# it was created correctly within Sonador database and compare UID to the local UID.
+						_, iserver_uid = posixpath.split(rdata.get(capicodes.UPDATE_URL))
+						iserver = self.serrver.get_imageserver(iserver_uid)
+						assert self.imageserver_id == iserver.pk
+
+				logger.warning('Orthanc instance %s registered with Sonador successfully' % self.imageserver_id)
+				return
+
+			# Queue retry 
+			except Exception as err:
+				logger.critical('Unable to register Orthanc instance %s with Sonador. Retry (%s/%s) in %s seconds'
+					% (self.imageserver_id, retry+1, self.retry_limit, self.retry_interval))
+
+				# Retry registration of the server in 30 seconds
+				self.create_scheduled_task(30, lambda: self.register_server(retry=retry+1))
+
+		# Unable to register server with Sonador: stop Orthanc
+		else:
+			logger.critical('Unable to register Orthanc instance %s with Sonador (failed %s/%s attempts).'
+				% (self.imageserver_id, retry, self.retry_limit))
+			self.shutdown_orthanc()
+
+	def create_scheduled_task(self, interval, task, *args, start=True, **kwargs):
+		'''	Creates a timer instance which will execute the provided task in the future.
+
+			@input interval (number): number of seconds to wait before executing the provided task
+			@input task (callable): function to be invoked by the timer
+			@input task (start, default=True): when True, the method will invoke the "start" method of
+				the task instance.
+
+			@returns threading.Timer
+		'''
+		timer = threading.Timer(interval, task, *args, **kwargs)
+		if start:
+			timer.start()
+
+		return timer
 
 	def register_recurring_task(self, schedule, task):
 		'''	Add a recurring task to the server manager
@@ -88,11 +187,10 @@ class SonadorServerManager:
 				finally:
 
 					# Schedule next run of the task
-					self.timers[schedule]['timer'] = threading.Timer(schedule, run_tasks)
-					self.timers[schedule]['timer'].start()
+					self.timers[schedule]['timer'] = self.create_scheduled_task(schedule, run_tasks, start=True)
 
 			# Schedule initial run of task (does not execute until manager.start called)
-			self.timers[schedule]['timer'] = threading.Timer(schedule, run_tasks)
+			self.timers[schedule]['timer'] = self.create_scheduled_task(schedule, run_tasks, start=False)
 
 		# Add task to callbacks chain
 		self.timers[schedule]['tasks'].append(task)
