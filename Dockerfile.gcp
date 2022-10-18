@@ -1,33 +1,13 @@
-FROM osimis/orthanc as build
+FROM osimis/orthanc:22.10.1-full
 
-# https://github.com/Microsoft/vcpkg#quick-start-unix
-RUN apt update; apt install -y git g++ pkg-config curl zip unzip tar cmake mercurial libgtest-dev \
-  libjsoncpp-dev uuid-dev e2fsprogs libboost-all-dev
-RUN git clone https://github.com/microsoft/vcpkg; ./vcpkg/bootstrap-vcpkg.sh
-
-# https://book.orthanc-server.com/plugins/object-storage.html#google-storage-plugin
-RUN ./vcpkg/vcpkg install cryptopp && ./vcpkg/vcpkg install google-cloud-cpp
-
-WORKDIR /orthanc-gcs/
-
-RUN hg clone https://hg.orthanc-server.com/orthanc-object-storage \
-  && mkdir -p build/google && cd build/google \
-  && cmake -DCMAKE_TOOLCHAIN_FILE=/vcpkg/scripts/buildsystems/vcpkg.cmake \
-    /orthanc-gcs/orthanc-object-storage/Google \
-  && make
-
-
-FROM osimis/orthanc
-
-COPY --from=build /orthanc-gcs/build/google/libOrthancGoogleCloudStorage.so /usr/share/orthanc/plugins/
-
+# The Osimis "full" image contains all cloud storage plugins along
 ARG CI_COMMIT_SHA
 
 # Install Python Requests Module
 RUN apt-get update
 RUN apt-get install -y python3-requests libtiff5-dev libjpeg-dev zlib1g-dev \
   libfreetype6-dev liblcms2-dev libwebp-dev libharfbuzz-dev libfribidi-dev \
-  tcl8.6-dev tk8.6-dev python-tk git
+  tcl8.6-dev tk8.6-dev python-tk git librdkafka-dev
 
 # Install Sonador Python Plugin
 RUN mkdir -p /opt/orthanc/
