@@ -11,40 +11,16 @@ from sonador.apisettings import \
 from sonador.servers import SonadorServer
 from sonador.imaging.orthanc import ImagingPatient, ImagingStudy, ImagingSeries
 
+from sonador_orthanc_common.apisettings import ORTHANC_SERVER_ID
+from sonador_orthanc_common.helpers import init_sonador_server, \
+	orthancserver_get_patient, orthancserver_get_study, orthancserver_get_series, \
+	orthancserver_sync_modalities, orthancserver_sync_dcmweb_remotes
+
 from .apisettings import ORTHANC_MAINDICOM_TAGS_DEFAULT, ORTHANC_CONFIG_SECTION_EXTRADICOMTAGS, \
 	ORTHANC_DEFAULT_ENCODING
 from .manager import SonadorServerManager
 
 logger = logging.getLogger(__name__)
-
-
-
-def init_sonador_server(sonador_config: dict):
-	'''	Initialize Sonador server
-	'''
-	# Connection URL
-	if not sonador_config.get('SonadorUrl'):
-		raise ValueError('Invalid configuration, invalid Sonador URL')
-
-	# Access Credentials
-	if not sonador_config.get('ApiToken'):
-		if not sonador_config.get('AccessId') or not sonador_config.get('SecretKey'):
-			raise ValueError('Invalid configuration, missing AccessID or Sonador secret key')
-
-	# Orthanc Server ID
-	ORTHANC_SONADOR_SERVERID = sonador_config.get('OrthancServerId')
-	if not ORTHANC_SONADOR_SERVERID:
-		raise ValueError('Invalid configuration, please provide server ID for server instance from Sonador')
-
-	# SSL verification
-	verify_ssl = sonador_config.get('VerifySSL', False)
-	internal_dns = sonador_config.get('InternalDns', False)
-
-	SONADOR_SERVER = SonadorServer(
-		sonador_config.get('SonadorUrl'), sonador_config.get('AccessId'), sonador_config.get('SecretKey'),
-		apitoken=sonador_config.get('ApiToken'), verify=verify_ssl, internal_dns=internal_dns)
-
-	return SONADOR_SERVER, ORTHANC_SONADOR_SERVERID
 
 
 def init_postgresdb_conn(postgres_config: dict, connection_template='postgresql+psycopg2://%s:%s@%s:%s/%s',
@@ -118,95 +94,13 @@ def init_fetch_sonador_configuration_callback(sonador_servermanager: SonadorServ
 		
 		try:
 			iserver = sonador_servermanager.server.get_imageserver(sonador_servermanager.imageserver_id)
-			logger.info(
-				'Configure remote DICOM modalities: %s' % ', '.join(
-					"%s" % dcm.orthanc_name for dcm in iserver.dicom_modalities))
 
-			# Retrieve local modality list to compare with remote list
-			rmodlist = orthanc.RestApiGet('/modalities')
-			orthanc_local_modlist = set(json.loads(
-				rmodlist.decode(orthanc_default_encoding) if isinstance(rmodlist, six.binary_type) else rmodlist))
-
-			# Remove modalities that are no longer active
-			for dmid in orthanc_local_modlist.difference(set(dcm.orthanc_name for dcm in iserver.dicom_modalities)):
-				logger.info('Modality %s no longer active, remove from server.' % dmid)
-				orthanc.RestApiDelete(posixpath.join('/modalities', dmid))
-			
-			# Update local server configuration once remote data has
-			for dcm in iserver.dicom_modalities:
-				orthanc.RestApiPut(posixpath.join('/modalities', dcm.orthanc_name), 
-					json.dumps({
-						'AET': dcm.aet, 'Port': dcm.port, 'Host': dcm.host,
-						'AllowEcho': dcm.acl_allow_echo, 'AllowFind': dcm.acl_allow_find,
-						'AllowGet': dcm.acl_allow_get, 'AllowMove': dcm.acl_allow_move, 'AllowStore': dcm.acl_allow_store
-					}))
-			
-			# Configure DICOMweb servers
-			logger.info('Configure DICOMweb remotes: %s' % ', '.join(
-				"%s" % dcmweb.orthanc_name for dcmweb in iserver.dicomweb_remotes))
-			for dcmweb in iserver.dicomweb_remotes:
-				rurl = iserver.orthanc_apiurl(posixpath.join('/dicom-web', 'servers', dcmweb.orthanc_name))
-				r = requests.put(rurl, json={
-					'Url': dcmweb.dicomweb_url, 'Username': dcmweb.username, 'Password': dcmweb.password,
-				}, headers=iserver.orthanc_request_headers())
-
-				if not r.ok:
-					raise ValueError('Unable to update DICOMweb configuration. Status code: %s. Request content:\n%s'
-						% (r.status_code ,r.content.decode('utf-8')))
+			# Apply DICOM and DICOMweb configuration from Sonador
+			orthancserver_sync_modalities(iserver, orthanc_default_encoding=orthanc_default_encoding)
+			orthancserver_sync_dcmweb_remotes(iserver, orthanc_default_encoding=orthanc_default_encoding)
 
 		except Exception as err:
 			logger.error(
 				'Unable to update Orthanc configuration from Sonador. Error: %s.\n%s'  % (err, traceback.format_exc()))
 
 	return fetch_sonador_configuration
-
-
-def orthancserver_get_patient(sonador_conn: SonadorServer, uid):
-	''' Retrieve patient data for the specified UID using the local Orthanc 
-		(rather than the REST) interface.
-
-		@input sonador_conn (sonador.servers.SonadorServer): Sonador server instance
-		@input uid (str): UID for the patient
-
-		@returns ImagingPatient instance
-	'''
-	# Retrieve patient and patient metadata
-	p = ImagingPatient(sonador_conn, json.loads(orthanc.RestApiGet('/patients/%s' % uid)))
-	setattr(p, '_meta', json.loads(orthanc.RestApiGet('/patients/%s/metadata?expand=true' % uid)))
-	return p
-
-
-def orthancserver_get_study(sonador_conn: SonadorServer, uid):
-	'''	Retrieve study data for the specified UID using the local Orthanc
-		(rather than the REST) interface.
-
-		@input sonador_conn (sonador.servers.SonadorServer): Sonador server instance
-		@input uid (str): UID for the study
-
-		@returns ImagingStudy instance
-	'''
-	# Retrieve study and study metadata
-	s = ImagingStudy(sonador_conn, json.loads(orthanc.RestApiGet('/studies/%s' % uid)))
-	setattr(s, '_meta', json.loads(orthanc.RestApiGet('/studies/%s/metadata?expand=true' % uid)))
-	
-	# Retrieve series details for the study
-	sx_collection = s.series_from_json(
-		json.loads(orthanc.RestApiGet('/studies/%s/series' % s.pk)))
-	setattr(s, '_series', sx_collection)
-
-	return s
-
-
-def orthancserver_get_series(sonador_conn: SonadorServer, uid):
-	'''	Retrieve series data for the specified UID using the local Orthanc
-		(rather than the REST) interface.
-
-		@input sonador_conn (sonador.servers.SonadorServer): Sonador server instance
-		@input uid (str): UID for the study
-
-		@returns ImagingSeries instance
-	'''
-	# Retrieve series and series metadata
-	sx = ImagingSeries(sonador_conn, json.loads(orthanc.RestApiGet('/series/%s' % uid)))
-	setattr(sx, '_meta', json.loads(orthanc.RestApiGet('/series/%s/metadata?expand=true' % uid)))
-	return sx

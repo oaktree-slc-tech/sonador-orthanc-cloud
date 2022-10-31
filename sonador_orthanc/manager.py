@@ -10,74 +10,48 @@ from client.utils.object import pick
 from sonador.servers import SonadorServer, SonadorImagingServer
 from sonador.remote import sonador_dataobject_create
 
-TIMER_30S = 30
-TIMER_MINUTE = 60
-TIMER_10MIN = TIMER_MINUTE*10
-TIMER_30MIN = TIMER_MINUTE*30
-TIMER_HOUR = TIMER_MINUTE*60
-TIMER_DAILY = TIMER_HOUR*24
+from sonador_orthanc_common import apisettings as orthancapi
+from sonador_orthanc_common.manager import BaseServerManager, \
+	TIMER_30S, TIMER_MINUTE, TIMER_10MIN, TIMER_10MIN, TIMER_30MIN, \
+	TIMER_HOUR, TIMER_DAILY
 
 logger = logging.getLogger(__name__)
 
 
 
 IMAGE_SERVER_CONFIG_TRANSFORMS = {
-	'OrthancServerScheme': 'scheme',
-	'OrthancServerHostname':  'hostname',
-	'OrthancServerPort': 'port',
-	'OrthancServerName': 'name',
-	'OrthancServerDescription':  'description',
-	'OrthancServerInternalScheme': 'internal_scheme',
-	'OrthancServerInternalHostname': 'internal_hostname',
-	'OrthancServerInternalPort': 'internal_port',
-	"OrthancServerActive": 'active',
+	orthancapi.ORTHANC_SONADOR_CONFIG_SERVER_SCHEME: 'scheme',
+	orthancapi.ORTHANC_SONADOR_CONFIG_SERVER_HOSTNAME:  'hostname',
+	orthancapi.ORTHANC_SONADOR_CONFIG_SERVER_PORT: 'port',
+	orthancapi.ORTHANC_SONADOR_CONFIG_SERVER_NAME: 'name',
+	orthancapi.ORTHANC_SONADOR_CONFIG_SERVER_DESCRIPTION:  'description',
+	orthancapi.ORTHANC_SONADOR_CONFIG_SERVER_INTERNAL_SCHEME: 'internal_scheme',
+	orthancapi.ORTHANC_SONADOR_CONFIG_SERVER_INTERNAL_HOSTNAME: 'internal_hostname',
+	orthancapi.ORTHANC_SONADOR_CONFIG_SERVER_INTERNAL_PORT: 'internal_port',
+	orthancapi.ORTHANC_SONADOR_SERVER_ACTIVE: 'active',
 }
 
 
-class SonadorServerManager:
+class SonadorServerManager(BaseServerManager):
 	'''	Manages the integration between Sonador and Orthanc and provides methods for
 		scheduling recurring tasks, executing long-running operations, and invoking callbacks
 		on server changes.
 	'''
-	threads_count = 4
 	registration_delay = 30
 	retry_limit = 3
 	retry_interval = 30
 
-	def __init__(self, sonador_conn: SonadorServer, imageserver_id: str, 
+	def __init__(self, sonador_conn: SonadorServer, imageserver_id: str, *args, 
 			threadpool=None, timers=None, changeCallbacks=None, **kwargs):
 		'''	Initialize server manager
 		'''
-		self.server = sonador_conn
 		self.imageserver_id = imageserver_id
-		self.threadpool = threadpool or ThreadPool(
-			max_workers=kwargs.get('threads_count', self.threads_count))
 		self.retry_limit = kwargs.get('retry_limit', self.retry_limit)
 		self.retry_interval = kwargs.get('retry_interval', self.retry_interval)
+		self.registration_delay = kwargs.get('registration_delay', self.registration_delay)
 
-		# Orthanc/Sonador configuration		
-		self.conf = kwargs.get('conf') or {}
-
-		# Manager state
-		self.running = False
-
-		# Recurring tasks and change event handlers
-		self.timers = timers or {}
-		self.changeCallbacks = changeCallbacks or {}
-
-		# Create and global onchange handler for manager
-		def server_onchange(ctype, level, resource):
-			'''	Execute change callbacks for the specified type
-			'''	
-			self.trigger_serverchange_callback(ctype, level, resource)
-
-		# Register global onchange handler
-		orthanc.RegisterOnChangeCallback(server_onchange)
-
-	def shutdown_orthanc(self, *args, **kwargs):
-		'''	Shutdown the Orthanc instance by making a call to '/tools/shutdown'.
-		'''
-		return orthanc.RestApiPost('/tools/shutdown', '')
+		super().__init__(
+			sonador_conn, *args, threadpool=threadpool, timers=timers, changeCallbacks=changeCallbacks, **kwargs)
 
 	def register_server(self, *args, **kwargs):
 		''' Synchronize local server configuration with remote configuration on Sonador. If an entry
@@ -129,121 +103,3 @@ class SonadorServerManager:
 			logger.critical('Unable to register Orthanc instance %s with Sonador (failed %s/%s attempts).'
 				% (self.imageserver_id, retry, self.retry_limit))
 			self.shutdown_orthanc()
-
-	def create_scheduled_task(self, interval, task, *args, start=True, **kwargs):
-		'''	Creates a timer instance which will execute the provided task in the future.
-
-			@input interval (number): number of seconds to wait before executing the provided task
-			@input task (callable): function to be invoked by the timer
-			@input task (start, default=True): when True, the method will invoke the "start" method of
-				the task instance.
-
-			@returns threading.Timer
-		'''
-		timer = threading.Timer(interval, task, *args, **kwargs)
-		if start:
-			timer.start()
-
-		return timer
-
-	def register_recurring_task(self, schedule, task):
-		'''	Add a recurring task to the server manager
-		'''
-		# Ensure that the manager instance is not running
-		if self.running:
-			raise ConfigurationError('Unable to add recurring task, server manager is currently running.')
-
-		# Check to see if a timer has been created for the specified interval,
-		# if not create timer and callback cache. Configure callbacks to run when
-		# manager.start is called.
-		if not self.timers.get(schedule):
-			self.timers[schedule] = { 'timer': None, 'tasks': [] }
-
-			def run_tasks():
-				'''	Execute all scheduled tasks
-				'''
-				logger.info('Server Manager: execute scheduled tasks (schedule=%s): num-tasks=%s' 
-					% (schedule, len(self.timers[schedule].get('tasks', []))))
-
-				# Set timer reference to None
-				try:
-					self.timers[schedule]['timer'] = None
-
-					# Iterate through all tasks in the schedule and execute in the background
-					for stask in self.timers[schedule].get('tasks', []):
-						
-						def background_task():
-							'''	 Try to execute background task using thread pool, log any errors
-							'''
-							try: stask()
-							except Exception as err:
-								logger.error('Unable to execute recurring task (schedule=%s). Error:\n%s' % err)
-
-						self.threadpool.submit(background_task)
-
-				except Exception as err:
-					logger.error('Unable to execute scheduled tasks (schedule=%s). Error:\n%s' % (schedule, err))
-
-				finally:
-
-					# Schedule next run of the task
-					self.timers[schedule]['timer'] = self.create_scheduled_task(schedule, run_tasks, start=True)
-
-			# Schedule initial run of task (does not execute until manager.start called)
-			self.timers[schedule]['timer'] = self.create_scheduled_task(schedule, run_tasks, start=False)
-
-		# Add task to callbacks chain
-		self.timers[schedule]['tasks'].append(task)
-
-	def register_serverchange_callback(self, changeType, changeCallback):
-		''' Add a server change callback to the manager
-		'''
-		# Create callback cache
-		if not self.changeCallbacks.get(changeType):
-			self.changeCallbacks[changeType] = []
-
-		self.changeCallbacks[changeType].append(changeCallback)
-
-	def trigger_serverchange_callback(self, ctype, level, resource):
-		'''	Execute change callbacks for the specified type
-		'''
-		if self.changeCallbacks.get(ctype):
-			for chandler in self.changeCallbacks[ctype]:
-				self.threadpool.submit(chandler, ctype, level, resource)
-
-	def start(self, *args, **kwargs):
-		'''	Start all timers registered with the manager
-		'''
-		if self.running:
-			raise ConfigurationError('Server manager is already running')
-
-		for schedule, tasks in self.timers.items():
-			if tasks.get('timer'):
-				logger.info('Server Manager: start scheduler (%s): num-tasks=%s' 
-					% (schedule, len(tasks.get('tasks', []))))
-				tasks.get('timer').start()
-
-		# Mark server manager as running
-		self.running = True
-
-	def stop(self, *args, **kwargs):
-		'''	Stop all timers registered with the manager
-		'''
-		if not self.running:
-			raise ConfigurationError('Server manager is not running')
-
-		# Cancel all scheduled tasks in timers, clear schedule from manager
-		for schedule in self.timers:
-			
-			tasks = self.timers.pop(schedule)
-			if tasks.get('timer'):
-				tasks.get('timer').cancel()
-
-			logger.info(
-				'Server Manager: stop scheduler (%s): num-tasks=%s' % schedule, tasks.get('tasks', []))
-
-		# Shutdown thread pool
-		self.threadpool.shutdown(wait=True)
-
-		# Mark server manager as stopped
-		self.running = False

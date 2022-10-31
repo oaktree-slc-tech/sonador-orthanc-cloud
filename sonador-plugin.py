@@ -7,8 +7,8 @@ from confluent_kafka import Producer
 from client.errors import ConfigurationError
 
 from sonador.apisettings import IMAGING_SERVER_RESOURCE_IMAGE, IMAGING_SERVER_RESOURCE_SERIES, \
-	IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_PATIENT 
-from sonador.remote import fetch_sonador_dataobject
+	IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_PATIENT, \
+	DCMHEADER_SERIES_INSTANCE_UID, DCMHEADER_STUDY_ID, DCMHEADER_PATIENT_ID
 from sonador.servers import SonadorServer, SonadorImagingServer
 
 from sonador_orthanc.apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, \
@@ -142,12 +142,12 @@ if KAFKA_PRODUCER != None:
 		}
 
 		# Move patient, study, and series identifiers to the top-level
-		if idata.get('PatientID'):
-			mdata['PatientID'] = idata.get('PatientID')
-		if idata.get('StudyID'):
-			mdata['StudyID'] = idata.get('StudyID')
-		if idata.get('SeriesInstanceUID'):
-			mdata['SeriesInstanceUID'] = idata.get('SeriesInstanceUID')
+		if idata.get(DCMHEADER_PATIENT_ID):
+			mdata[DCMHEADER_PATIENT_ID] = idata.get(DCMHEADER_PATIENT_ID)
+		if idata.get(DCMHEADER_STUDY_ID):
+			mdata[DCMHEADER_STUDY_ID] = idata.get(DCMHEADER_STUDY_ID)
+		if idata.get(DCMHEADER_SERIES_INSTANCE_UID):
+			mdata[DCMHEADER_SERIES_INSTANCE_UID] = idata.get(DCMHEADER_SERIES_INSTANCE_UID)
 		
 		orthanc.LogInfo('JSON data for DICOM instance:\n%r' % mdata)
 
@@ -182,12 +182,12 @@ if KAFKA_PRODUCER != None:
 		mdata[KTAG_ORTHANC_SERVER_DICOM] = rdata
 
 		# Move patient, study, and series identifiers to the top-level
-		if rdata.get('PatientID'):
-			mdata['PatientID'] = rdata.get('PatientID')
-		if rdata.get('StudyID'):
-			mdata['StudyID'] = rdata.get('StudyID')
-		if rdata.get('SeriesInstanceUID'):
-			mdata['SeriesInstanceUID'] = rdata.get('SeriesInstanceUID')
+		if rdata.get(DCMHEADER_PATIENT_ID):
+			mdata[DCMHEADER_PATIENT_ID] = rdata.get(DCMHEADER_PATIENT_ID)
+		if rdata.get(DCMHEADER_STUDY_ID):
+			mdata[DCMHEADER_STUDY_ID] = rdata.get(DCMHEADER_STUDY_ID)
+		if rdata.get(DCMHEADER_SERIES_INSTANCE_UID):
+			mdata[DCMHEADER_SERIES_INSTANCE_UID] = rdata.get(DCMHEADER_SERIES_INSTANCE_UID)
 
 		# Send to Kafka
 		KAFKA_PRODUCER.produce(KAFKA_TOPIC, json.dumps(mdata), callback=orthanc_kafka_delivery_report)
@@ -253,7 +253,6 @@ def orthanc_sonador_onstart(changeType, level, resource):
 	'''	Initialize Orthanc/Sonador inegration. Handle server state changes.
 
 		@event startup: Initialize the server configuration and background timers.
-		@event shutdown: Stop all background timers
 	'''
 	# Initialize Sonador remote configuration agent
 	orthanc.LogWarning('Start Sonador Server Manager scheduler')
@@ -268,6 +267,8 @@ def orthanc_sonador_onstart(changeType, level, resource):
 
 def orthanc_sonador_onstop(changeType, level, resource):
 	'''	Orthanc/Sonador integration teardown
+
+		@event shutdown: Stop all background timers
 	'''
 	orthanc.LogWarning('Stop Sonador Server Manager scheduler')
 	ORTHANC_SONADOR_MANAGER.stop()
