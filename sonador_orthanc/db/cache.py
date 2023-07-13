@@ -13,16 +13,20 @@ from sonador.imaging.orthanc.base import ImagingSeries, ImagingStudy, ImagingPat
 from .base import DbBase, AutoDbBase
 
 
-class CacheResourceMixin:
-	'''	Mixin class providing Orthanc identifiers and cache fields for an Orthanc
-		MainDicomTags response.
+class CacheResourceDbPropertiesMixin:
+	'''	Mixin class providing Orthanc identifiers and common fields.
 	'''
-	__table_args__ = { 'extend_existing': True }
-
 	uid = Column(SqlString(64), primary_key=True, unique=True)
 	orthanc = Column(mutable_json_type(dbtype=JSONB, nested=True))
 	mtime = Column(SqlDateTime(), nullable=True)
 	stable = Column(SqlBoolean(), nullable=True)
+
+
+class CacheResourceMixin(CacheResourceDbPropertiesMixin):
+	'''	Mixin class providing Orthanc identifiers and cache fields for an Orthanc
+		MainDicomTags response.
+	'''
+	__table_args__ = { 'extend_existing': True }
 
 	@classmethod
 	def _init_cache_instance(cls, session, rinstance):

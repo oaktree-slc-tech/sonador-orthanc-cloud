@@ -6,10 +6,12 @@ from client.errors import ConfigurationError
 from client.utils.object import omit, pick
 
 from sonador.apisettings import \
-	IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES
+	IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES, \
+	DCM_QUERY_ALLFIELDS
 from sonador.serialization import dcm_str2date
 
-from ..db.helpers import dcmquery2psqlregex
+from ..db.cache import CachePatient, CacheStudy, CacheSeries
+from ..db.helpers import dcmquery2psqlregex, dcmquery_psqlregex_flags
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +117,83 @@ class DicomQueryMixin(ABC):
 
 		return queryval
 
+	def _patient_querycondition(self, patient_tagname, patient_queryfilter, **kwargs):
+		'''	Create a patient query condition for the provided tag name and filter
+		'''
+		return CachePatient.orthanc[patient_tagname].astext.regexp_match(patient_queryfilter, flags=dcmquery_psqlregex_flags(**kwargs))
+
+	def _study_querycondition(self, study_tagname, study_queryfilter, **kwargs):
+		'''	Create a study query condition for the provided tag name and filter
+		'''
+		return CacheStudy.orthanc[study_tagname].astext.regexp_match(study_queryfilter, flags=dcmquery_psqlregex_flags(**kwargs))
+
+	def _series_querycondition(self, series_tagname, series_queryfilter, **kwargs):
+		'''	Create a series query condition for the provided tag name and filter
+		'''
+		return CacheSeries.orthanc[series_tagname].astext.regexp_match(series_queryfilter, flags=dcmquery_psqlregex_flags(**kwargs))
+
+	def _querybuild_or(self, queryfilter, condition_builder, **kwargs):
+		'''	Create an "OR" condition funciton from the provide query filter and condition builder method.
+
+			@input queryfilter (dict): headers/values to use for building the OR query.
+			@input condition_builder (callable): method to be called for creating new query conditions
+
+			@returns condition function
+		'''
+		# Ensure that the condition builder is a valid callable
+		if not callable(condition_builder):
+			raise ValueError('Invalid query buidler function. Must be a callable object.')
+
+		# Ensure that at least one conditions was provided in the query filter
+		if not queryfilter:
+			raise ValueError('Invalid query filter, at least one header and filter value must be provided')
+
+		# Create OR query from tags and filter values
+		query_or = None
+		for tagname, queryval in queryfilter.items():
+			if query_or is None: query_or = condition_builder(tagname, queryval, **kwargs)
+			else: query_or |= condition_builder(tagname, queryval, **kwargs)
+
+		return query_or
+
+	def _patient_querycondition_or(self, patient_queryfilter, **kwargs):
+		'''	Create a patient OR query
+
+			@input patient_queryfilter (dict): headers/values to use for building the OR query
+
+			@returns query conditions
+		'''
+		return self._querybuild_or(patient_queryfilter, self._patient_querycondition, **kwargs)
+
+	def _study_querycondition_or(self, study_queryfilter, **kwargs):
+		''' Create a study OR query
+
+			@input study_queryfilter (dict): headers/values to use for building the OR query
+
+			@returns query conditions
+		'''
+		return self._querybuild_or(study_queryfilter, self._study_querycondition, **kwargs)
+		
+	def _series_querycondition_or(self, series_queryfilter, **kwargs):
+		'''	Create a series OR query
+
+			@input series_queryfilter (dict): headers/values to use for building the OR 
+
+			@return query conditions
+		'''
+		return self._querybuild_or(series_queryfilter, self._series_querycondition, **kwargs)
+
+	@abc.abstractmethod
+	def apply_allfields_queryfilter(self, dcm_resources, allfields_queryfilter, *args, **kwargs):
+		'''	Apply an "all fields" filter to the DICOM resource list
+
+			@input dcm_resources (sqlalchemy.orm.query.Query): resource query to which the
+				all fields query filter should be applied.
+			@input allfields_queryfilter (str): query filter to apply
+
+			@returns filtered query
+		'''
+
 	@abc.abstractmethod
 	def apply_patient_queryfilter(self, dcm_resources, patient_tagname, patient_queryfilter, *args, **kwargs):
 		'''	Apply a patient filter to the DICOM resource list
@@ -140,7 +219,7 @@ class DicomQueryMixin(ABC):
 		'''
 
 	@abc.abstractmethod
-	def apply_series_queryfilter(self, dcm_resources, series_tagname, series_queryfilter, *args, **kwargs):
+	def apply_series_queryfilter(self, dcm_resources, series_queryfilter, *args, **kwargs):
 		'''	Apply a series filter to the DICOM resource list
 
 			@input dcm_resources (sqlalchemy.orm.query.Query): resource query to which the series
@@ -156,6 +235,13 @@ class DicomQueryMixin(ABC):
 		'''
 		# Filter results from cache
 		resources = self.apply_session_options(session, self.get_base_resourcelist(session, *args, **kwargs))
+
+		# Query all available fields
+		if self.dicom_query.get(DCM_QUERY_ALLFIELDS):
+
+			# Create PSQL regular expression from DICOM query and query all fields
+			allfields_queryfilter = self.dcmquery2psqlregex(self.dicom_query.get(DCM_QUERY_ALLFIELDS))
+			resources = self.apply_allfields_queryfilter(resources, allfields_queryfilter)
 
 		# Find "patient" resource query parameters
 		for patient_tagname, patient_queryval in \

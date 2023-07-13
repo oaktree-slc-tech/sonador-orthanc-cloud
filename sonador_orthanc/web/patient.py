@@ -16,13 +16,14 @@ from sonador.serialization import dcm_str2date, SonadorJsonEncoder
 
 from ..db.cache import CachePatient, CacheStudy, CacheSeries
 from ..db.helpers import cache_orthanc_patientjson
+from ..dcmquery.patient import CachePatientQueryMixin
 
 from .queryview import DicomQueryBaseView
 
 logger = logging.getLogger(__name__)
 
 
-class CachePatientListBaseView(DicomQueryBaseView):
+class CachePatientListBaseView(CachePatientQueryMixin, DicomQueryBaseView):
 	'''	REST patient list endpoint which is able to use the Sonador database cache to search
 		for patient instances.
 	'''
@@ -32,44 +33,7 @@ class CachePatientListBaseView(DicomQueryBaseView):
 
 	def setup(self, output, uri, request, *args, **kwargs):
 		super().setup(output, uri, request)
-
-		if not hasattr(self, 'series_date_filter'):
-			raise ConfigurationError(
-				'Unable to initialize, `series_date_filter` is a required property for the %s view.' % type(self).__name__)
-
-		if not hasattr(self, 'study_date_filter'):
-			raise ConfigurationError(
-				'Unable to initialize, `study_date_filter` is a required property for the %s view.' % type(self).__name__)
-
-	def apply_patient_queryfilter(self, dcm_resources, patient_tagname, patient_queryfilter, *args, **kwargs):
-		'''	Apply a patient filter to the resource list. For a ptient query, the patient tags are applied
-			to the orthanc JSONB property of CachePatient using a regular expressions match.
-		'''
-		return dcm_resources.filter(CachePatient.orthanc[patient_tagname].astext.regexp_match(patient_queryfilter))
-
-	def apply_study_queryfilter(self, dcm_resources, study_tagname, study_queryfilter, *args, **kwargs):
-		'''	Apply a study filter to the resource list. For a study query, the tags are applied to the
-			orthanc JSONB property of CachePatient.studies_collection relationship using a regular expression match.
-		'''
-		return dcm_resources.filter(CachePatient.studies_collection.any(
-			CacheStudy.orthanc[study_tagname].astext.regexp_match(study_queryfilter)))
-
-	def apply_series_queryfilter(self, dcm_resources, series_tagname, series_queryfilter, *args, **kwargs):
-		'''	Apply a series filter to the resource list. For a series query, the tags are applied to the orthanc
-			JSONB property of the CachePatient.studies_collection.series_collection relationship using 
-			a regular expression match.
-		'''
-		return dcm_resources.filter(CachePatient.studies_collection.any(
-				CacheStudy.series_collection.any(
-					CacheSeries.orthanc[series_tagname].astext.regexp_match(series_queryfilter))))
-
-	def get_patientlist(self, session, *args, **kwargs):
-		'''	Execute DICOM query and retrieve patient list
-		'''
-		# Filter results from cache
-		patientlist = self.execute_resource_query(session, *args, **kwargs)
-
-		return patientlist
+		self._init_patientquery(output, uri, request, *args, **kwargs)
 
 
 class CachePatientQueryView(CachePatientListBaseView):
