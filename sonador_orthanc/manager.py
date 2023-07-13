@@ -1,8 +1,6 @@
 import six, os, json, logging, pprint, threading, requests, traceback, posixpath
 from concurrent.futures import ThreadPoolExecutor as ThreadPool
 
-import orthanc
-
 from client import apisettings as capicodes
 from client.errors import ConfigurationError, ResourceDoesNotExist
 from client.utils.object import pick

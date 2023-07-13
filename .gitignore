@@ -1,2 +1,5 @@
 __pycache__
 *.pyc
+client
+sonador
+sonador_orthanc_common

@@ -390,6 +390,8 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 			sonador_cache.CacheIndexResourceView.as_view(sonador_conn=SONADOR_SERVER, sessionmaker=OrthancSession,
 				resource_cachemodel=sonador_cachedb.CacheSeries))
 
+		# Reconstrct and index patients, studies, and series
+
 
 		# Cache indexing tasks
 
@@ -447,3 +449,35 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 
 	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 		orthanc.ChangeType.ORTHANC_STARTED, orthanc_cache_onstart)
+
+
+	def orthanc_worklist_onstart(changeType, level, resource):
+		'''	Initialize Orthanc worklist models, endpoints, and scheduled tasks
+		'''
+		from sonador_orthanc.web.worklist import ProcedureStepManagementView
+
+		logger.critical('Enable worklist management view')
+
+		orthanc.RegisterRestCallback(
+			'/sonador/worklist', ProcedureStepManagementView.as_view(sessionmaker=OrthancSession))
+
+
+	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
+		orthanc.ChangeType.ORTHANC_STARTED, orthanc_worklist_onstart)
+
+
+	def orthanc_sysinfo_onstart(changeType, level, resource):
+		'''	Initialize Orthanc system info and status endpoints
+		'''
+		from sonador_orthanc.web.system import SonadorOrthancSystemReportView, SonadorOrthancSystemStatusView
+
+		logger.critical('Enable Sonador/Orthanc system views')
+
+		orthanc.RegisterRestCallback(
+			'/system', SonadorOrthancSystemReportView.as_view(orthanc_conf=CONF, servermanager=ORTHANC_SONADOR_MANAGER))
+		orthanc.RegisterRestCallback(
+			'/system/status', SonadorOrthancSystemStatusView.as_view(servermanager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
+
+
+	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
+		orthanc.ChangeType.ORTHANC_STARTED, orthanc_sysinfo_onstart)

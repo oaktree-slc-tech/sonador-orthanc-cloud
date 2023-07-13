@@ -16,6 +16,22 @@ PSQL_REGEX_TRANSFORMS = (
 )
 
 
+def dcmquery_psqlregex_flags(**kwargs):
+	'''	Create a "flags" string to pass to PSQL via regex_match.
+
+		@returns str or None: PSQL flags to pass to psql_match or None if no flags are defined
+	'''
+	flags = kwargs.get('flags', '')
+
+	# Case sensitive
+	if kwargs.get('case_sensitive') and 'i' in flags:
+		flags = flags.replace('i', '')
+	else: flags += 'i'
+
+	# Return None if not flags defined
+	return flags if flags else None
+
+
 def dcmquery2psqlregex(dcmquery, regex_transforms=PSQL_REGEX_TRANSFORMS):
 	'''	Convert the provided DICOM query string to a PSQL regular expression.
 
@@ -31,7 +47,6 @@ def dcmquery2psqlregex(dcmquery, regex_transforms=PSQL_REGEX_TRANSFORMS):
 		psql_pattern = re.sub(p, r, psql_pattern)
 
 	return psql_pattern
-
 
 
 def cache_orthanc_patientjson(cpatient, resource_type=IMAGING_SERVER_RESOURCE_PATIENT):
