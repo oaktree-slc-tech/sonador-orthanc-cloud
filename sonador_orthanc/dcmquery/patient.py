@@ -12,6 +12,7 @@ from sonador.apisettings import \
 	DCMHEADER_MODALITIES_IN_STUDY
 
 from ..db.cache import CachePatient, CacheStudy, CacheSeries
+from ..db.dcmext import CachePatientPrivateTags, CacheStudyPrivateTags, CacheSeriesPrivateTags
 from ..db.helpers import dcmquery_psqlregex_flags
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,12 @@ class CachePatientQueryMixin(object):
 			raise ConfigurationError(
 				'Unable to initialize, `study_date_filter` is a required property for the %s view.' % type(self).__name__)
 
+	def apply_session_options(self, session, basequery, *args, **kwargs):
+		'''	Create join between primary and private DICOM cache tables
+		'''
+		basequery = super().apply_session_options(session, basequery, *args, **kwargs)
+		return basequery.options(joinedload(self.resource_model.privatetags))
+
 	def apply_allfields_queryfilter(self, dcm_resources, allfields_queryfilter, **kwargs):
 		'''	Apply an "all fields" filter to the DICOM resource list
 
@@ -44,19 +51,52 @@ class CachePatientQueryMixin(object):
 
 			@returns filtered query
 		'''
-		# Patient query condition
-		patient_tagquery = self._patient_querycondition_or(
-			dict((ptag, allfields_queryfilter) for ptag in self.cache_dicomtags.get(IMAGING_SERVER_RESOURCE_PATIENT)), **kwargs)
+		dcm_privatetags = getattr(self, 'dcm_privatetags', None) or {}
 
-		# Study query condition
+		# Patient query condition: standard DICOM tags
+		patient_tagquery = self._patient_querycondition_or(
+			dict((ptag, allfields_queryfilter) for ptag in self.cache_dicomtags.get(IMAGING_SERVER_RESOURCE_PATIENT)
+				if not ptag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_PATIENT, [])),
+			**kwargs)
+		
+		if dcm_privatetags.get(IMAGING_SERVER_RESOURCE_PATIENT):
+
+			# Query patient private tags
+			patient_private_tagquery = self._patient_querycondition_or(
+				dict((ptag, allfields_queryfilter) for ptag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_PATIENT)),
+				privatetags=True, **kwargs)
+			patient_tagquery |= CachePatient.privatetags.has(patient_private_tagquery)
+
+		# Study query condition: standard DICOM tags
 		study_tagquery = self._study_querycondition_or(
-			dict((stag, allfields_queryfilter) for stag in self.cache_dicomtags.get(IMAGING_SERVER_RESOURCE_STUDY)), **kwargs)
+			dict((stag, allfields_queryfilter) for stag in self.cache_dicomtags.get(IMAGING_SERVER_RESOURCE_STUDY)
+				if not stag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY, [])),
+			**kwargs)
 		study_querycondition = CachePatient.studies_collection.any(study_tagquery)
 
-		# Series query condition
+		if dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY):			
+
+			# Query study private tags
+			study_private_tagquery = self._study_querycondition_or(
+				dict((stag, allfields_queryfilter) for stag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY)),
+				privatetags=True, **kwargs)
+			study_querycondition |= CachePatient.studies_collection.any(CacheStudy.privatetags.has(study_private_tagquery))
+
+		# Series query condition: standard DICOM tags
 		series_tagquery = self._series_querycondition_or(
-			dict((sxtag, allfields_queryfilter) for sxtag in self.cache_dicomtags.get(IMAGING_SERVER_RESOURCE_SERIES)), **kwargs)
+			dict((sxtag, allfields_queryfilter) for sxtag in self.cache_dicomtags.get(IMAGING_SERVER_RESOURCE_SERIES)
+				if not sxtag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES, [])), 
+			**kwargs)
 		series_querycondition = CachePatient.studies_collection.any(CacheStudy.series_collection.any(series_tagquery))
+
+		if dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES):
+
+			# Query series private tags
+			series_private_tagquery = self._series_querycondition_or(
+				dict((sxtag, allfields_queryfilter) for sxtag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES)),
+				privatetags=True, **kwargs)
+			series_querycondition |= CachePatient.studies_collection.any(CacheStudy.series_collection.any(
+				CacheSeries.privatetags.has(series_private_tagquery)))
 
 		return dcm_resources.filter(patient_tagquery | study_querycondition | series_querycondition)
 
@@ -64,12 +104,26 @@ class CachePatientQueryMixin(object):
 		'''	Apply a patient filter to the resource list. For a ptient query, the patient tags are applied
 			to the orthanc JSONB property of CachePatient using a regular expressions match.
 		'''
+		# Query patient private tags
+		if self.dcm_privatetags and self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_PATIENT) \
+			and patient_tagname in self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_PATIENT, []):
+			return dcm_resources.filter(CachePatient.privatetags.has(
+				self._patient_querycondition(patient_tagname, patient_queryfilter, pivatetags=True, **kwargs)))
+
+		# Query primary DICOM attirbutes
 		return dcm_resources.filter(self._patient_querycondition(patient_tagname, patient_queryfilter, **kwargs))
 
 	def apply_study_queryfilter(self, dcm_resources, study_tagname, study_queryfilter, **kwargs):
 		'''	Apply a study filter to the resource list. For a study query, the tags are applied to the
 			orthanc JSONB property of CachePatient.studies_collection relationship using a regular expression match.
-		'''
+		'''		
+		# Query study private tags
+		if self.dcm_privatetags and self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY) \
+			and study_tagname in self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY, []):			
+			return dcm_resources.filter(CachePatient.studies_collection.any(
+				CacheStudy.privatetags.has(self._study_querycondition(study_tagname, study_queryfilter, privatetags=True, **kwargs))))
+
+		# Query primary DICOM attributes
 		return dcm_resources.filter(CachePatient.studies_collection.any(
 			self._study_querycondition(study_tagname, study_queryfilter, **kwargs)))
 
@@ -78,6 +132,15 @@ class CachePatientQueryMixin(object):
 			JSONB property of the CachePatient.studies_collection.series_collection relationship using 
 			a regular expression match.
 		'''
+		# Query series private tags
+		if self.dcm_privatetags and self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES) \
+			and study_tagname in self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES, []):
+			return dcm_resources.filter(CachePatient.studies_collection.any(
+				CacheStudy.series_collection.any(
+					CacheSeries.privatetags.has(
+						self._series_querycondition(series_tagname, series_queryfilter, privatetags=True, **kwargs)))))
+
+		# Query primary DICOM attributes
 		return dcm_resources.filter(CachePatient.studies_collection.any(
 			CacheStudy.series_collection.any(
 				self._series_querycondition(series_tagname, series_queryfilter, **kwargs))))

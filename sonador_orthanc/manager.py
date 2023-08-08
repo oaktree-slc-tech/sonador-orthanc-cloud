@@ -12,6 +12,7 @@ from sonador_orthanc_common import apisettings as orthancapi
 from sonador_orthanc_common.manager import BaseServerManager, \
 	TIMER_30S, TIMER_MINUTE, TIMER_10MIN, TIMER_10MIN, TIMER_30MIN, \
 	TIMER_HOUR, TIMER_DAILY
+from sonador_orthanc_common.servers import ResponseLikeObject, OrthancInternalImagingServer
 
 logger = logging.getLogger(__name__)
 
@@ -101,3 +102,13 @@ class SonadorServerManager(BaseServerManager):
 			logger.critical('Unable to register Orthanc instance %s with Sonador (failed %s/%s attempts).'
 				% (self.imageserver_id, retry, self.retry_limit))
 			self.shutdown_orthanc()
+
+	def get_internal_imageserver(self, *args, **kwargs):
+		'''	Retrieve an image server instance that can be used by Orthanc plugins.
+		'''
+		iserver_data = kwargs.get('iserver_data', { OrthancInternalImagingServer.pk_attr: self.imageserver_id, })
+		if self.conf.get(orthancapi.ORTHANC_SONADOR_CONFIG_SERVER_NAME):
+			iserver_data['name'] = self.conf.get(orthancapi.ORTHANC_SONADOR_CONFIG_SERVER_NAME)
+
+		return self.server.get_imageserver(self.imageserver_id, imageserver_datamodel_class=OrthancInternalImagingServer,
+			fetch_callable=lambda *_a, **_ka: ResponseLikeObject(json.dumps(iserver_data)))

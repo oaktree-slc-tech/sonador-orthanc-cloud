@@ -23,6 +23,7 @@ class DicomQueryMixin(ABC):
 	sessionmaker = None
 	resource_model = None
 	cache_dicomtags = None
+	dcm_privatetags = None
 	dicom_query = None
 
 	def _init_dcmquery(self, *args, **kwargs):
@@ -117,20 +118,23 @@ class DicomQueryMixin(ABC):
 
 		return queryval
 
-	def _patient_querycondition(self, patient_tagname, patient_queryfilter, **kwargs):
+	def _patient_querycondition(self, patient_tagname, patient_queryfilter, privatetags=False, **kwargs):
 		'''	Create a patient query condition for the provided tag name and filter
 		'''
-		return CachePatient.orthanc[patient_tagname].astext.regexp_match(patient_queryfilter, flags=dcmquery_psqlregex_flags(**kwargs))
+		cachemodel = CachePatient.privatetags_resource_model if privatetags else CachePatient
+		return cachemodel.orthanc[patient_tagname].astext.regexp_match(patient_queryfilter, flags=dcmquery_psqlregex_flags(**kwargs))
 
-	def _study_querycondition(self, study_tagname, study_queryfilter, **kwargs):
+	def _study_querycondition(self, study_tagname, study_queryfilter, privatetags=False, **kwargs):
 		'''	Create a study query condition for the provided tag name and filter
 		'''
-		return CacheStudy.orthanc[study_tagname].astext.regexp_match(study_queryfilter, flags=dcmquery_psqlregex_flags(**kwargs))
+		cachemodel = CacheStudy.privatetags_resource_model if privatetags else CacheStudy		
+		return cachemodel.orthanc[study_tagname].astext.regexp_match(study_queryfilter, flags=dcmquery_psqlregex_flags(**kwargs))
 
-	def _series_querycondition(self, series_tagname, series_queryfilter, **kwargs):
+	def _series_querycondition(self, series_tagname, series_queryfilter, privatetags=False, **kwargs):
 		'''	Create a series query condition for the provided tag name and filter
 		'''
-		return CacheSeries.orthanc[series_tagname].astext.regexp_match(series_queryfilter, flags=dcmquery_psqlregex_flags(**kwargs))
+		cachemodel = CacheSeries.privatetags_resource_model if privatetags else CacheSeries
+		return cachemodel.orthanc[series_tagname].astext.regexp_match(series_queryfilter, flags=dcmquery_psqlregex_flags(**kwargs))
 
 	def _querybuild_or(self, queryfilter, condition_builder, **kwargs):
 		'''	Create an "OR" condition funciton from the provide query filter and condition builder method.

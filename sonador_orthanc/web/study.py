@@ -13,13 +13,17 @@ from sonador.apisettings import \
 from sonador.imaging.helpers.conversion import json2dcmjson
 from sonador.serialization import dcm_str2date, SonadorJsonEncoder
 
+from sonador_orthanc_common.servers import ResponseLikeObject, local_orthanc_apiurl
+
 from ..apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, ORTHANC_CONFIG_SECTION_POSTGRES, \
 	ORTHANC_CONFIG_SECTION_EXTRADICOMTAGS, ORTHANC_MAINDICOM_TAGS_DEFAULT
 from ..db.cache import CachePatient, CacheStudy, CacheSeries
+from ..db.dcmext import CacheSeriesPrivateTags
 from ..db.helpers import cache_orthanc_studyjson
 from ..dcmquery import CacheStudyQueryMixin
 
 from .queryview import DicomQueryBaseView
+from .resource import SonadorResourceBaseView
 
 logger = logging.getLogger(__name__)
 
@@ -78,3 +82,10 @@ class CacheStudyQueryView(CacheStudyListBaseView):
 				[self.orthanc_studyjson(cs) for cs in self.paginate_query_results(
 					orthanc_studies, self.offset or 0, self.limit)], 
 				cls=SonadorJsonEncoder))
+
+
+class SonadorStudyResourceView(SonadorResourceBaseView):
+	'''	Orthanc resource view for managing study data
+	'''
+	resource_base = 'studies'
+	resource_cachemodel = CacheStudy

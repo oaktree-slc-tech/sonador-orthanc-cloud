@@ -61,20 +61,24 @@ def init_postgresdb_conn(postgres_config: dict, pool_pre_ping=True, pool_recycle
 	return orthanc_sqlengine, OrthancSession
 
 
-def orthanc_maindicom_tags(orthanc_conf, maindicom_tags_default=ORTHANC_MAINDICOM_TAGS_DEFAULT):
+def orthanc_maindicom_tags(orthanc_conf, maindicom_tags_default=ORTHANC_MAINDICOM_TAGS_DEFAULT, dcm_privatetags=None):
 	'''	Retrieve the main DICOM tags list for the server
 	'''
 	# Default main DICOM tags. Refer to https://book.orthanc-server.com/faq/main-dicom-tags.html.
 	cdicomtags = copy.copy(maindicom_tags_default)
-	
+	dcm_privatetags = dcm_privatetags or {}
+
 	# Extra main DICOM tags defined in configuration
 	for rtype in (IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES):
 		ctagset = cdicomtags.get(rtype, set())
+		ctagset_private = dcm_privatetags.get(rtype, set())
 
 		# Add extra DICOM tags for resource type to tag set
 		extratags = orthanc_conf.get(ORTHANC_CONFIG_SECTION_EXTRADICOMTAGS, {}).get(rtype, [])
 		logger.debug('Extra DICOM tags (resource=%s): %s' % (rtype, ', '.join(extratags)))
 		ctagset.update(extratags)
+		if ctagset_private:
+			ctagset.update(ctagset_private)
 		
 		cdicomtags[rtype] = ctagset
 

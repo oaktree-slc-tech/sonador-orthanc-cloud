@@ -19,6 +19,7 @@ from ..db.helpers import cache_orthanc_seriesjson
 from ..dcmquery import CacheSeriesQueryMixin
 
 from .queryview import DicomQueryBaseView
+from .resource import SonadorResourceBaseView
 
 logger = logging.getLogger(__name__)
 
@@ -75,3 +76,10 @@ class CacheSeriesQueryView(CacheSeriesListBaseView):
 				[self.orthanc_seriesjson(cs) for cs in self.paginate_query_results(
 					orthanc_series, self.offset or 0, self.limit)],
 				cls=SonadorJsonEncoder))
+
+
+class SonadorSeriesResourceView(SonadorResourceBaseView):
+	'''	Orthanc resource view for managing series data
+	'''
+	resource_base = 'series'
+	resource_cachemodel = CacheSeries

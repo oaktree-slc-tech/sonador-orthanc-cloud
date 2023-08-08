@@ -30,3 +30,7 @@ SONADOR_CACHE_COUNT_PATIENT = 'patient-count'
 SONADOR_CACHE_COUNT_STUDY = 'study-count'
 SONADOR_CACHE_COUNT_SERIES = 'series-count'
 
+
+# Private DICOM Tags
+SONADOR_CONF_PRIVATE_DICT = 'Dictionary'
+SONADOR_CONF_PRIVATE_TAGS = 'PrivateMainDicomTags'

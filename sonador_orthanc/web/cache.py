@@ -1,6 +1,6 @@
 '''	Orthanc views which help with the management of the resource cache.
 '''
-import posixpath, pydicom, logging, json, copy, datetime
+import posixpath, pydicom, logging, json, copy, datetime, traceback
 import orthanc
 
 from sqlalchemy.orm import joinedload
@@ -54,31 +54,106 @@ IMAGING_CACHE_RESOURCES = {
 }
 
 
-
-class CacheStatusBaseView(OrthancBaseView):
-	'''	Base view with endpoints to retrieve the status of the Sonador cache.
-
-		1. Number of patients, studies, and series in the resources table.
-		2. Number of patients, studies, and series in the Sonador cache tables.
+class CacheBaseView(OrthancBaseView):
+	'''	Base class for cache based views
 	'''
-	sonador_conn = None
+	sonador_manager = None
 	sessionmaker = None
 
 	def setup(self, output, uri, request, *args, **kwargs):
-		''' Setup view instance ensure that sessionmaker instance is available.
+		''' Setup view instance and ensure that sessionmaker instance is available.
 		'''
 		super().setup(output, uri, request)
 
 		# Ensure that Sonador connection instance is present
-		if self.sonador_conn is None:
+		if self.sonador_manager is None:
 			raise ConfigurationError(
 				'Unable to initialize %s view instance: invalid Sonador connection' % type(self).__name__)
 
 		# Ensure valid session maker instance is present
 		if self.sessionmaker is None:
 			raise ConfigurationError(
-				'Unable to initialize %s view instance: invalid session maker instance' % type(self).__name__)	
+				'Unable to initialize %s view instance: invalid session maker instance' % type(self).__name__)
 
+
+class ResourceBaseMixin(object):
+	''' Mixin which provids methods to parse URLs and retrieve resources from the Orthanc database.
+	'''
+	resource_uid_regex = IMAGING_SERVER_UID_REGEX
+	resource_model = Resource
+
+	def init_resource_mixin(self, *args, **kwargs):
+		'''	Verify that mixin properties, database models, and other attributes have been provided.
+		'''
+		if not self.resource_model:
+			raise ConfigurationError(
+				'Unable to initialize %s view instance: invalid reseource model' % type(self).__name__)
+		
+		self.resource_type = kwargs.get('resource_type')
+		self.resource_code = kwargs.get('resource_code')
+
+		if not self.resource_type:
+			raise ConfigurationError(
+				'Unable to initialize %s (uri=%s) view instance, invalid resource type (type=%s).' 
+					% (type(self).__name__, getattr(self, 'uri', None), self.resource_type))
+		if self.resource_code is None:
+			raise ConfigurationError(
+				'Unable to initialize %s (uri=%s) view instance, invalid resource code (code=%s).' 
+					% (type(self).__name__, getattr(self, 'uri', None), self.resource_code))
+
+	def get_resource_uid(self, *args, **kwargs):
+		''' Retrieve the UID of the DICOM resource from the URL
+
+			@returns str or None: UID if there was a match, None otherwise
+		'''
+		ruid_match = self.resource_uid_regex.match(self.uri)
+		return ruid_match.groupdict().get('uid') if ruid_match else None
+
+	def get_resource(self, session, *args, **kwargs):
+		'''	Retrieve resource instance
+		'''
+		ruid = self.get_resource_uid(*args, **kwargs)
+		r = session.query(self.resource_model).filter_by(resourcetype=self.resource_code, publicid=ruid).first()
+		if not r:
+			raise ResourceDoesNotExist(
+				'Unable to retrieve retrieve resource model instance, uid=%s does not exist' % ruid,
+				resource_details={ 'type': self.resource_type, 'uid': ruid })
+		
+		return r
+
+
+class ResourceUidMixin(ResourceBaseMixin):
+	'''	Mixin which provides integation methods between the Orthanc resources and the Sonador resource cache.
+		(Inherits from ResourceBaseMixin.)
+	'''
+	resource_cachemodel = None
+	imaging_cache_resources = IMAGING_CACHE_RESOURCES
+
+	def init_resource_mixin(self, *args, **kwargs):
+		'''	Initialize resource mixin properties from cache metadata
+		'''
+		if not self.resource_cachemodel:
+			raise ConfigurationError(
+				'Unable to initialize %s (uri=%s) view instance: invalid cache model' % (type(self).__name__), getattr(self, 'uri', None))
+		if not self.imaging_cache_resources.get(self.resource_cachemodel):
+			raise ConfigurationError(
+				'Unable to initialize %s view (uri=%s) instance: unsupported cache model %s'
+					% (type(self).__name__, getattr(self, 'uri', None), self.resource_cachemodel.__name__))
+
+		self.resource_index_method = self.imaging_cache_resources.get(self.resource_cachemodel, {}).get('index_method')
+		self.resource_opcode = self.imaging_cache_resources.get(self.resource_cachemodel, {}).get(gcapicodes.OPCODE)
+		self.resource_opcode_delete = self.imaging_cache_resources.get(self.resource_cachemodel, {}).get('code_delete')
+
+		super().init_resource_mixin(*args, resource_type=self.resource_cachemodel.type,
+			resource_code=self.resource_cachemodel.code, **omit(kwargs, ('resource_type', 'resource_code')))
+
+
+class CacheStatusBaseView(CacheBaseView):
+	'''	Base view with endpoints to retrieve the status of the Sonador cache.
+
+		1. Number of patients, studies, and series in the resources table.
+		2. Number of patients, studies, and series in the Sonador cache tables.
+	'''
 	def cache_status_patient_count(self, session):
 		'''	Retrieve status of patient tables in database and cache
 		'''
@@ -104,15 +179,12 @@ class CacheStatusBaseView(OrthancBaseView):
 		}
 
 
-class CacheIndexResourceView(OrthancBaseView):
+class CacheIndexResourceView(ResourceUidMixin, OrthancBaseView):
 	'''	REST endpoint which can be used to place a copy of DICOM resource data in the Sonador cache.
 	'''
-	sonador_conn = None
+	sonador_manager = None
 	sessionmaker = None
-	resource_model = Resource	
-	resource_cachemodel = None
-	resource_uid_regex = IMAGING_SERVER_UID_REGEX
-	imaging_cache_resources = IMAGING_CACHE_RESOURCES
+	dcm_privatetags = None
 
 	def setup(self, output, uri, request, *args, **kwargs):
 		'''	Verify that database properties, database models, and indexing method have been provided.
@@ -120,7 +192,7 @@ class CacheIndexResourceView(OrthancBaseView):
 		super().setup(output, uri, request)
 
 		# Ensure that Sonador connection instance is present
-		if self.sonador_conn is None:
+		if self.sonador_manager is None:
 			raise ConfigurationError(
 				'Unable to initialize %s view instance: invalid Sonador connection' % type(self).__name__)
 
@@ -130,45 +202,11 @@ class CacheIndexResourceView(OrthancBaseView):
 				'Unable to initialize %s view instance: invalid session maker instance' % type(self).__name__)
 
 		# Ensure that a resource model has been defined and an index method is available
-		if not self.resource_model:
-			raise ConfigurationError(
-				'Unable to initialize %s view instance: invalid reseource model' % type(self).__name__)
-		if not self.resource_cachemodel:
-			raise ConfigurationError(
-				'Unable to initialize %s view instance: invalid cache model' % type(self).__name__)
-		if not self.imaging_cache_resources.get(self.resource_cachemodel):
-			raise ConfigurationError(
-				'Unable to initialize %s view instance: unsupported cache model %s'
-					% (type(self).__name__, self.resource_cachemodel.__name__))
+		self.init_resource_mixin(*args, **kwargs)
 
 		# De-serialize request data and retrieve operation parameters
 		self.POST = json.loads(request.get('body')) if request.get('body') else {}
 		self.link = str2bool(self.POST.get('link', True))
-		self.resource_type = self.imaging_cache_resources.get(self.resource_cachemodel, {}).get('type')
-		self.resource_code = self.imaging_cache_resources.get(self.resource_cachemodel, {}).get('code')
-		self.resource_index_method = self.imaging_cache_resources.get(self.resource_cachemodel, {}).get('index_method')
-		self.resource_opcode = self.imaging_cache_resources.get(self.resource_cachemodel, {}).get(gcapicodes.OPCODE)
-		self.resource_opcode_delete = self.imaging_cache_resources.get(self.resource_cachemodel, {}).get('code_delete')
-
-	def get_resource_uid(self, *args, **kwargs):
-		''' Retrieve the UID of the DICOM resource from the URL
-
-			@returns str or None: UID if there was a match, None otherwise
-		'''
-		ruid_match = self.resource_uid_regex.match(self.uri)
-		return ruid_match.groupdict().get('uid') if ruid_match else None
-
-	def get_resource(self, session, *args, **kwargs):
-		'''	Retrieve resource instance
-		'''
-		ruid = self.get_resource_uid(*args, **kwargs)
-		r = session.query(self.resource_model).filter_by(resourcetype=self.resource_code, publicid=ruid).first()
-		if not r:
-			raise ResourceDoesNotExist(
-				'Unable to retrieve retrieve resource model instance, uid=%s does not exist' % ruid,
-				resource_details={ 'type': self.resource_type, 'uid': ruid })
-		
-		return r
 
 	def post(self, output, uri, request, *args, **kwargs):
 		'''	Add resource to the index cache 
@@ -188,7 +226,9 @@ class CacheIndexResourceView(OrthancBaseView):
 				response['ID'] = r.publicid
 
 				# Create copy of resource in cache
-				self.resource_index_method(self.sonador_conn, session, r.publicid, link=self.link)
+				self.resource_index_method(
+					self.sonador_manager, session, r.publicid, link=self.link, 
+					dcm_privatetags=(self.dcm_privatetags or {}).get(self.resource_type))
 				response[gcapicodes.STATUS] = gcapicodes.SUCCESS
 
 				return self.send_response(json.dumps(response, cls=SonadorJsonEncoder))
@@ -197,7 +237,7 @@ class CacheIndexResourceView(OrthancBaseView):
 			response.update({
 				gcapicodes.ERROR: 'Resource uid=%s does not exist' \
 					% self.get_resource_uid(*args, **kwargs) or '(none)',
-					gcapicodes.STATUS: gcapicodes.FAIL
+				gcapicodes.STATUS: gcapicodes.FAIL
 			})
 
 			return self.http404_resource_not_found(response=response)
@@ -206,7 +246,7 @@ class CacheIndexResourceView(OrthancBaseView):
 			response.update({
 				gcapicodes.ERROR: 'Unable to index resource uid=%s. Error:\n%s' \
 					% (self.get_resource_uid(*args, **kwargs), err),
-				gcapicodes.STATUS: gcapicodes.FAIL
+				gcapicodes.STATUS: gcapicodes.FAIL,
 			})
 			return self.send_response(json.dumps(response, cls=SonadorJsonEncoder), status_code=500)
 
@@ -236,6 +276,11 @@ class CacheIndexResourceView(OrthancBaseView):
 					response[gcapicodes.STATUS] = gcapicodes.FAIL
 					response[gcapicodes.ERROR] = 'Resource type=%s uid=%s not present in resource cache' \
 						% (self.resource_type, r.publicid)
+
+				# Remove associated public tags (not user-facing).
+				pcr = session.query(self.resource_cachemodel.privatetags_resource_model).get(r.publicid)
+				if pcr:
+					session.delete(pcr)
 				
 				session.commit()
 
@@ -261,7 +306,7 @@ class CacheBulkIndexBaseView(CacheStatusBaseView):
 		Operations can be processed in the foreground or background.
 	'''
 	threadpool = None
-	index_batch_size = 100
+	index_batch_size = 100	
 
 	def setup(self, output, uri, request, *args, **kwargs):
 		super().setup(output, uri, request)
@@ -314,6 +359,8 @@ class CacheStatusView(CacheStatusBaseView):
 class CacheBulkIndexPatientView(CacheBulkIndexBaseView):
 	'''	REST endpoint which can be used to add patients to the Sonador cache.
 	'''
+	dcm_privatetags = None
+
 	def post(self, output, uri, request):
 		'''	Execute indexing operations for patient cache
 		'''
@@ -335,14 +382,14 @@ class CacheBulkIndexPatientView(CacheBulkIndexBaseView):
 			response[gcapicodes.STATUS] = gcapicodes.INIT
 
 			op_indexpatient = self.threadpool.submit(
-				cache_bulk_index_patients, self.sonador_conn, self.sessionmaker, 
+				cache_bulk_index_patients, self.sonador_manager, self.sessionmaker, 
 				batch_size=self.index_batch_size, limit=self.limit, offset=self.offset)
 			op_indexpatient.add_done_callback(op_indexpatient_complete)
 
 			return self.send_response(json.dumps(response))
 
 		# Run index operation in foreground		
-		opresult = cache_bulk_index_patients(self.sonador_conn, self.sessionmaker, 
+		opresult = cache_bulk_index_patients(self.sonador_manager, self.sessionmaker, 
 			batch_size=self.index_batch_size, limit=self.limit, offset=self.offset)
 
 		# Add operations results to response
@@ -366,6 +413,8 @@ class CacheBulkIndexPatientView(CacheBulkIndexBaseView):
 class CacheBulkIndexStudyView(CacheBulkIndexBaseView):
 	'''	REST endpoint which can be used to add studies to the Sonador cache.
 	'''
+	dcm_privatetags = None
+
 	def post(self, output, uri, request):
 		'''	Execute indexing operations for study cache
 		'''
@@ -387,14 +436,14 @@ class CacheBulkIndexStudyView(CacheBulkIndexBaseView):
 			response[gcapicodes.STATUS] = gcapicodes.INIT
 
 			op_indexstudy = self.threadpool.submit(
-				cache_bulk_index_studies, self.sonador_conn, self.sessionmaker, batch_size=self.index_batch_size,
+				cache_bulk_index_studies, self.sonador_manager, self.sessionmaker, batch_size=self.index_batch_size,
 				limit=self.limit, offset=self.offset)
 			op_indexstudy.add_done_callback(op_indexstudy_complete)
 
 			return self.send_response(json.dumps(response))
 
 		# Run index operation in foreground
-		opresult = cache_bulk_index_studies(self.sonador_conn, self.sessionmaker, batch_size=self.index_batch_size,
+		opresult = cache_bulk_index_studies(self.sonador_manager, self.sessionmaker, batch_size=self.index_batch_size,
 			limit=self.limit, offset=self.offset)
 
 		# Add operations results to response
@@ -418,6 +467,8 @@ class CacheBulkIndexStudyView(CacheBulkIndexBaseView):
 class CacheBulkIndexSeriesView(CacheBulkIndexBaseView):
 	'''	REST endpoint which can be used to add DICOM series to the Sonador cache.
 	'''
+	dcm_privatetags = None
+
 	def post(self, output, uri, request):
 		'''	Execute indexing operations for series cache
 		'''
@@ -439,14 +490,14 @@ class CacheBulkIndexSeriesView(CacheBulkIndexBaseView):
 			response[gcapicodes.STATUS] = gcapicodes.INIT
 
 			op_indexseries = self.threadpool.submit(
-				cache_bulk_index_series, self.sonador_conn, self.sessionmaker, batch_size=self.index_batch_size,
+				cache_bulk_index_series, self.sonador_manager, self.sessionmaker, batch_size=self.index_batch_size,
 				limit=self.limit, offset=self.offset)
 			op_indexseries.add_done_callback(op_indexseries_complete)
 
 			return self.send_response(json.dumps(response))
 
 		# Run index operation in foreground
-		opresult = cache_bulk_index_series(self.sonador_conn, self.sessionmaker, batch_size=self.index_batch_size,
+		opresult = cache_bulk_index_series(self.sonador_manager, self.sessionmaker, batch_size=self.index_batch_size,
 			limit=self.limit, offset=self.offset)
 
 		# Add operation results to response
@@ -474,6 +525,7 @@ class AdminRebuildCacheView(CacheBulkIndexBaseView):
 	threadpool = None
 	cache_tables = (CacheSeries, CacheStudy, CachePatient)
 	index_batch_size = 100
+	dcm_privatetags = None
 
 	def setup(self, output, uri, request, *args, **kwargs):
 		super().setup(output, uri, request)
@@ -537,18 +589,18 @@ class AdminRebuildCacheView(CacheBulkIndexBaseView):
 
 				def schedule_indexop_series(opresult_study):
 					op_indexseries = self.threadpool.submit(
-						cache_bulk_index_series, self.sonador_conn, self.sessionmaker, batch_size=self.index_batch_size)
+						cache_bulk_index_series, self.sonador_manager, self.sessionmaker, batch_size=self.index_batch_size)
 					op_indexseries.add_done_callback(lambda opresult: logger.warning('Bulk index of series data complete'))
 
 				def schedule_indexop_study(opresult_patient):
 					op_indexstudy = self.threadpool.submit(
-						cache_bulk_index_studies, self.sonador_conn, self.sessionmaker, batch_size=self.index_batch_size)
+						cache_bulk_index_studies, self.sonador_manager, self.sessionmaker, batch_size=self.index_batch_size)
 					op_indexstudy.add_done_callback(schedule_indexop_series)
 					op_indexstudy.add_done_callback(lambda opresult: logger.warning('Bulk index of study data complete'))
 
 				# Schedule patient indexing (first step in chain)
 				op_indexpatient = self.threadpool.submit(
-					cache_bulk_index_patients, self.sonador_conn, self.sessionmaker, batch_size=self.index_batch_size)
+					cache_bulk_index_patients, self.sonador_manager, self.sessionmaker, batch_size=self.index_batch_size)
 				op_indexpatient.add_done_callback(schedule_indexop_study)
 				op_indexpatient.add_done_callback(lambda opresult: logger.warning('Bulk index of patient data complete'))
 
@@ -571,3 +623,70 @@ class AdminRebuildCacheView(CacheBulkIndexBaseView):
 		logger.warning('Rebuild of Orthanc/Sonador Resource Cache successful.')
 		return self.send_response(json.dumps(response), status_code=status_code)
 
+
+class CacheReconstructResourceView(ResourceUidMixin, CacheBaseView):
+	'''	Orthanc reconstruct view which re-indexes resources after they have been rebuilt.
+	'''	
+	dcm_privatetags = None
+
+	def setup(self, output, uri, request, *args, **kwargs):
+		'''	Verify that database properties, database models, and indexing method have been provided.
+		'''
+		super().setup(output, uri, request)
+
+		# Ensure that a resource model has been defined and an index method is available
+		self.init_resource_mixin(*args, **kwargs)
+
+		# De-serialize request data and retrieve operation parameters
+		self.POST = json.loads(request.get('body')) if request.get('body') else {}
+		self.link = str2bool(self.POST.get('link', True))
+
+	def post(self, output, uri, request, *args, **kwargs):
+		'''	Rebuild the specified resource and re-index
+		'''
+		response = kwargs.get('response') or { 'Type': self.resource_type }
+
+		try:
+			# Ensure that the resource exists before reconstructing
+			with self.sessionmaker() as session:
+				r = self.get_resource(session, *args, **kwargs)
+				response['ID'] = r.publicid
+
+				# Reconstruct resource
+				rc = orthanc.RestApiPost(uri, json.dumps(pick(self.POST, ('ReconstructFiles',))))
+				response.update({
+					'reconstruct': json.loads(rc) if (rc and '{' in rc.encode('utf-8')) else {
+						'reconstruct': { gcapicodes.OPCODE: 'reconstruct', gcapicodes.STATUS: gcapicodes.SUCCESS, }	
+					}
+				})
+
+				# Re-index resource			
+				self.resource_index_method(self.sonador_manager, session, r.publicid, link=self.link,
+					dcm_privatetags=(self.dcm_privatetags or {}).get(self.resource_type))
+				response.update({ 'index': {
+						gcapicodes.OPCODE: self.resource_opcode,
+						gcapicodes.STATUS: gcapicodes.SUCCESS,
+					}
+				})
+
+			return self.send_response(json.dumps(response))
+
+		except ResourceDoesNotExist as err:
+			response.update({
+				gcapicodes.ERROR: 'Resource uid=%s does not exist' \
+					% self.get_resource_uid(*args, **kwargs) or '(none)',
+				gcapicodes.STATUS: gcapicodes.FAIL,
+			})
+			return self.http404_resource_not_found(json.dumps(response, cls=SonadorJsonEncoder))
+
+		except Exception as err:
+			logger.error('Unable to reconstruct resource uid=%s. Error="%s". Traceback:\n%s' % (
+				self.get_resource_uid(*args, **kwargs), err, traceback.format_exc()
+			))
+
+			response.update({
+				gcapicodes.ERROR: 'Unable to reconstruct resource uid=%s. Error:\n%s' \
+					% (self.get_resource_uid(*args, **kwargs), err),
+				gcapicodes.STATUS: gcapicodes.FAIL,
+			})
+			return self.send_response(json.dumps(response, cls=SonadorJsonEncoder), status_code=500)

@@ -6,6 +6,7 @@ from sqlalchemy import or_, and_
 
 from client.errors import ConfigurationError
 from client.utils.object import omit, pick
+from client.utils.urls import build_url
 
 from sonador.apisettings import \
 	IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES, \
@@ -14,11 +15,15 @@ from sonador.apisettings import \
 from sonador.imaging.helpers.conversion import json2dcmjson
 from sonador.serialization import dcm_str2date, SonadorJsonEncoder
 
+from sonador_orthanc_common.servers import ResponseLikeObject, local_orthanc_apiurl
+
 from ..db.cache import CachePatient, CacheStudy, CacheSeries
+from ..db.dcmext import CachePatientPrivateTags
 from ..db.helpers import cache_orthanc_patientjson
 from ..dcmquery.patient import CachePatientQueryMixin
 
 from .queryview import DicomQueryBaseView
+from .resource import SonadorResourceBaseView
 
 logger = logging.getLogger(__name__)
 
@@ -79,3 +84,10 @@ class CachePatientQueryView(CachePatientListBaseView):
 				[self.orthanc_patientjson(cp) for cp in self.paginate_query_results(
 					orthanc_patients, self.offset or 0, self.limit)],
 				cls=SonadorJsonEncoder))
+
+
+class SonadorPatientResourceView(SonadorResourceBaseView):
+	'''	Orthanc resource view for managing patient data
+	'''
+	resource_base = 'patients'
+	resource_cachemodel = CachePatient
