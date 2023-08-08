@@ -1,8 +1,10 @@
-import copy, re, fnmatch
+import copy, re, fnmatch, logging
 
 from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, \
 	IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_IMAGE, \
 	DCMHEADER_MODALITIES_IN_STUDY
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -41,6 +43,8 @@ def dcmquery2psqlregex(dcmquery, regex_transforms=PSQL_REGEX_TRANSFORMS):
 	'''
 	# Transform DICOM query to Python regular expression
 	psql_pattern = copy.copy(dcmquery)
+	if not isinstance(psql_pattern, (str, bytes)):
+		psql_pattern = str(psql_pattern)
 
 	# Convert Python regular expression to PostgreSQL re syntax
 	for p,r in regex_transforms:
@@ -49,10 +53,15 @@ def dcmquery2psqlregex(dcmquery, regex_transforms=PSQL_REGEX_TRANSFORMS):
 	return psql_pattern
 
 
-def cache_orthanc_patientjson(cpatient, resource_type=IMAGING_SERVER_RESOURCE_PATIENT):
+def cache_orthanc_patientjson(cpatient, resource_type=None):
 	'''	Create Orthanc JSON structure for the provided cache patient
 	'''
-	dcm = { 'ID': cpatient.uid, 'MainDicomTags': cpatient.orthanc, 'Type': resource_type }
+	if getattr(cpatient, 'privatetags', None):
+		dcmtags_main = copy.deepcopy(cpatient.orthanc)
+		dcmtags_main.update(cpatient.privatetags.orthanc)
+	else: dcmtags_main = cpatient.orthanc
+
+	dcm = { 'ID': cpatient.uid, 'MainDicomTags': dcmtags_main, 'Type': resource_type or cpatient.type }
 	if cpatient.studies:
 		dcm['Studies'] = cpatient.studies
 	if cpatient.stable is not None:
@@ -63,10 +72,15 @@ def cache_orthanc_patientjson(cpatient, resource_type=IMAGING_SERVER_RESOURCE_PA
 	return dcm
 
 
-def cache_orthanc_studyjson(cstudy, resource_type=IMAGING_SERVER_RESOURCE_STUDY):
+def cache_orthanc_studyjson(cstudy, resource_type=None):
 	'''	Create Orthanc JSON structure for the provided cache study. 
 	'''
-	dcm = { 'ID': cstudy.uid, 'MainDicomTags': cstudy.orthanc, 'Type': resource_type }
+	if getattr(cstudy, 'privatetags', None):
+		dcmtags_main = copy.deepcopy(cstudy.orthanc)
+		dcmtags_main.update(cstudy.privatetags.orthanc)
+	else: dcmtags_main = cstudy.orthanc
+
+	dcm = { 'ID': cstudy.uid, 'MainDicomTags': dcmtags_main, 'Type': resource_type or cstudy.type }
 	if cstudy.parent:
 		dcm['ParentPatient'] = cstudy.parent_id
 		dcm['PatientMainDicomTags'] = cstudy.parent.orthanc
@@ -84,10 +98,15 @@ def cache_orthanc_studyjson(cstudy, resource_type=IMAGING_SERVER_RESOURCE_STUDY)
 	return dcm
 
 
-def cache_orthanc_seriesjson(cseries, resource_type=IMAGING_SERVER_RESOURCE_SERIES):
+def cache_orthanc_seriesjson(cseries, resource_type=None):
 	'''	Crfeate Orthanc JSON structure for the provided cache series.
 	'''
-	dcm = { 'ID': cseries.uid, 'MainDicomTags': cseries.orthanc, 'Type': resource_type }
+	if getattr(cseries, 'privatetags', None):
+		dcmtags_main = copy.deepcopy(cseries.orthanc)
+		dcmtags_main.update(cstudy.privatetags.orthanc)
+	else: dcmtags_main = cseries.orthanc
+
+	dcm = { 'ID': cseries.uid, 'MainDicomTags': dcmtags_main, 'Type': resource_type or cseries.type }
 	if cseries.parent_id:
 		dcm['ParentStudy'] = cseries.parent_id
 	if cseries.instances:

@@ -10,6 +10,7 @@ from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_
 	DCMHEADER_MODALITIES_IN_STUDY, DCMHEADER_MODALITY, DCMHEADER_SERIES_DATE, DCMHEADER_STUDY_DATE
 
 from ..db.cache import CachePatient, CacheStudy, CacheSeries
+from ..db.dcmext import CachePatientPrivateTags, CacheStudyPrivateTags, CacheSeriesPrivateTags
 from ..db.helpers import dcmquery_psqlregex_flags
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,12 @@ class CacheStudyQueryMixin(object):
 			raise ConfigurationError(
 				'Unable to initialize, `series_date_filter` is a required property for the %s view' % type(self).__name__)
 
+	def apply_session_options(self, session, basequery, *args, **kwargs):
+		'''	Create join between primary and private DICOM cache tables
+		'''
+		basequery = super().apply_session_options(session, basequery, *args, **kwargs)
+		return basequery.options(joinedload(self.resource_model.privatetags))
+
 	def apply_allfields_queryfilter(self, dcm_resources, allfields_queryfilter, **kwargs):
 		'''	Apply an "all fields" filter to the DICOM resource list
 
@@ -43,19 +50,49 @@ class CacheStudyQueryMixin(object):
 
 			@returns filtered query
 		'''
+		dcm_privatetags = getattr(self, 'dcm_privatetags', None) or {}
+
 		# Patient query condition
 		patient_tagquery = self._patient_querycondition_or(
-			dict((ptag, allfields_queryfilter) for ptag in self.cache_dicomtags.get(IMAGING_SERVER_RESOURCE_PATIENT)), **kwargs)
+			dict((ptag, allfields_queryfilter) for ptag in self.cache_dicomtags.get(IMAGING_SERVER_RESOURCE_PATIENT)
+				if not ptag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_PATIENT, [])), 
+			**kwargs)
 		patient_querycondition = CacheStudy.parent.has(patient_tagquery)
+
+		if dcm_privatetags.get(IMAGING_SERVER_RESOURCE_PATIENT):
+
+			# Query patient private tags
+			patient_private_tagquery = self._patient_querycondition_or(
+				dict((ptag, allfields_queryfilter) for ptag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_PATIENT)),
+				privatetags=True, **kwargs)
+			patient_querycondition |= CacheStudy.parent.has(CachePatient.privatetags.has(patient_private_tagquery))
 
 		# Study query condition
 		study_tagquery = self._study_querycondition_or(
-			dict((stag, allfields_queryfilter) for stag in self.cache_dicomtags.get(IMAGING_SERVER_RESOURCE_STUDY)), **kwargs)
+			dict((stag, allfields_queryfilter) for stag in self.cache_dicomtags.get(IMAGING_SERVER_RESOURCE_STUDY)
+				if not stag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY)),
+			**kwargs)
+
+		if dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY):
+			
+			# Query study private tags
+			study_private_tagquery = self._study_querycondition_or(
+				dict((stag, allfields_queryfilter) for stag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY)),
+				privatetags=True, **kwargs)
+			study_tagquery |= study_private_tagquery
 
 		# Series query condition
 		series_tagquery = self._series_querycondition_or(
 			dict((sxtag, allfields_queryfilter) for sxtag in self.cache_dicomtags.get(IMAGING_SERVER_RESOURCE_SERIES)), **kwargs)
 		series_querycondition = CacheStudy.series_collection.any(series_tagquery)
+
+		if dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES):
+
+			# Query series private tags
+			series_private_tagquery = self._series_querycondition_or(
+				dict((sxtag, allfields_queryfilter) for sxtag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES)),
+				privatetags=True, **kwargs)
+			series_querycondition |= CacheStudy.series_collection.any(CacheSeries.privatetags.any(series_private_tagquery))
 
 		return dcm_resources.filter(patient_querycondition | study_tagquery | series_querycondition)
 	
@@ -63,7 +100,15 @@ class CacheStudyQueryMixin(object):
 			dcm_resources, patient_tagname, patient_queryfilter, **kwargs):
 		'''	Apply a patient filter to the resource list. For a study query the patient tags are applied
 			to the orthanc JSONB property of the CacheStudy.parent relationship using a regular expression match.
-		'''
+		'''	
+		# Query patient private tags
+		if self.dcm_privatetags and self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_PATIENT) \
+			and patient_tagname in self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_PATIENT, []):
+			return dcm_resources.filter(CacheStudy.parent.has(
+				CachePatient.privatetags.has(
+					self._patient_querycondition(patient_tagname, patient_queryfilter, privatetags=True, **kwargs))))
+
+		# Query primay DICOM attributes
 		return dcm_resources.filter(CacheStudy.parent.has(
 			self._patient_querycondition(patient_tagname, patient_queryfilter, **kwargs)))
 
@@ -72,6 +117,13 @@ class CacheStudyQueryMixin(object):
 		'''	Apply a study filter to the resource list. For a study query, the tags are applied to the 
 			CacheStudy.orthanc JSONB property using a regular expression match.
 		'''
+		# Query study private tags
+		if self.dcm_privatetags and self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY) \
+			and study_tagname in self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY, []):
+			return dcm_resources.filter(CacheStudy.privatetags.has(
+				self._study_querycondition(study_tagname, study_queryfilter, privatetags=True, **kwargs)))
+
+		# Query primary DICOM attributes
 		return dcm_resources.filter(self._study_querycondition(study_tagname, study_queryfilter, **kwargs))
 
 	def apply_series_queryfilter(self, 
@@ -79,6 +131,14 @@ class CacheStudyQueryMixin(object):
 		'''	Apply a series filter to the resource list. For a series query, the tags are applied to the 
 			CacheStudy.series_collection property.
 		'''
+		# Query series private tags
+		if self.dcm_privatetags and self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES) \
+			and series_tagname in self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES, []):
+			return dcm_resources.filter(CacheStudy.series_collection.any(
+				CacheSeries.privatetags.has(
+					self._series_querycondition(series_tagname, series_queryfilter, privatetags=True, **kwargs))))
+
+		# Query primary DICOM attributes
 		return dcm_resources.filter(CacheStudy.series_collection.any(
 			self._series_querycondition(series_tagname, series_queryfilter, **kwargs)))
 

@@ -14,11 +14,12 @@ from .base import DbBase, AutoDbBase
 from .cache import CacheResourceDbPropertiesMixin
 
 
-class ProcedureStep(CacheResourceDbPropertiesMixin):
+class ProcedureStep(CacheResourceDbPropertiesMixin, DbBase):
 	'''	Model for unified procedure step: provides a data structure able to provide status on a scheduled
 		procedure, the state of its fulfillment, and what was performed.
 	'''
 	__tablename__ = 'sonador_worklist_procedurestep'
+	__table_args__ = { 'extend_existing': True }
 
 	# Creation timestamps
 	ctime = Column(SqlDateTime())

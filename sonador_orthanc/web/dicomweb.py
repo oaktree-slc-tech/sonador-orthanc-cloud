@@ -15,7 +15,7 @@ from sonador.imaging.helpers.conversion import json2dcmjson
 from sonador.serialization import dcm_str2date
 
 from ..apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, ORTHANC_CONFIG_SECTION_POSTGRES, \
-	ORTHANC_CONFIG_SECTION_EXTRADICOMTAGS, ORTHANC_MAINDICOM_TAGS_DEFAULT
+	ORTHANC_CONFIG_SECTION_EXTRADICOMTAGS, ORTHANC_MAINDICOM_TAGS_DEFAULT, SONADOR_CONF_PRIVATE_TAGS
 from ..helpers import orthanc_maindicom_tags
 from ..db.cache import CachePatient, CacheStudy, CacheSeries
 from ..db.helpers import dcmquery2psqlregex
@@ -75,11 +75,12 @@ class CacheStudyDicomWebListView(CacheStudyListBaseView):
 				[self.dcmweb_studyjson(cs) for cs in dweb_studies[self.offset:self.limit+self.offset]]))
 
 
-def init_cached_studylist_endpoint_callback(orthanc_conf, OrthancSession):
+def init_cached_endpoints(orthanc_conf, OrthancSession):
 	'''	Initialize DICOMweb study list endpoint callback
 	'''
 	dicomweb_conf = orthanc_conf.get(ORTHANC_CONFIG_SECTION_DICOMWEB, {})
 	dicomweb_root = dicomweb_conf.get('Root')
+	dcm_privatetags = orthanc_conf.get(SONADOR_CONF_PRIVATE_TAGS, {})
 	if not dicomweb_root:
 		raise ConfigurationError('Unable to initialize Study list endpoint, invalid DICOMweb configuration. '
 			+ 'No DICOMweb root defined in configuration.')
@@ -88,6 +89,8 @@ def init_cached_studylist_endpoint_callback(orthanc_conf, OrthancSession):
 			'will be included in searches and data in ExtraMainDicomTags will be incorporated in responses.')
 		% posixpath.join(dicomweb_root, 'studies'))
 
-	# Initialize view class instance
-	return CacheStudyDicomWebListView.as_view(
-		sessionmaker=OrthancSession, cache_dicomtags=orthanc_maindicom_tags(orthanc_conf))
+	# Initialize DICOMweb study query interface
+	orthanc.RegisterRestCallback(
+		posixpath.join(dicomweb_root, 'studies'),
+		CacheStudyDicomWebListView.as_view(
+			sessionmaker=OrthancSession, cache_dicomtags=orthanc_maindicom_tags(orthanc_conf), dcm_privatetags=dcm_privatetags))
