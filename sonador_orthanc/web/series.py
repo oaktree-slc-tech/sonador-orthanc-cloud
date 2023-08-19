@@ -1,4 +1,4 @@
-import posixpath, pydicom, logging, json, copy, datetime
+import posixpath, pydicom, logging, json, copy, datetime, traceback
 import orthanc
 
 from sqlalchemy.orm import joinedload
@@ -14,6 +14,7 @@ from sonador.apisettings import \
 from sonador.imaging.helpers.conversion import json2dcmjson
 from sonador.serialization import dcm_str2date, SonadorJsonEncoder
 
+from ..apisettings import SONADOR_CACHE_ORDER_BY
 from ..db.cache import CachePatient, CacheStudy, CacheSeries
 from ..db.helpers import cache_orthanc_seriesjson
 from ..dcmquery import CacheSeriesQueryMixin
@@ -57,6 +58,7 @@ class CacheSeriesQueryView(CacheSeriesListBaseView):
 		self.study_modalities = self.query.get(DCMHEADER_MODALITIES_IN_STUDY)
 		self.study_date_filter = self.query.get(DCMHEADER_STUDY_DATE)
 		self.series_date_filter = self.query.get(DCMHEADER_SERIES_DATE)
+		self.order_by = self.POST.get(SONADOR_CACHE_ORDER_BY)
 
 	def orthanc_seriesjson(self, cseries):
 		'''	Create Orthanc JSON response for the provided cached series
@@ -66,16 +68,33 @@ class CacheSeriesQueryView(CacheSeriesListBaseView):
 	def post(self, output, uri, request):
 		'''	Return list of series which match the request parameters
 		'''
-		with self.sessionmaker() as session:
+		try:
+			with self.sessionmaker() as session:
 
-			# Retrieve Orthanc series
-			orthanc_series = self.get_serieslist(session)
+				# Retrieve Orthanc series
+				orthanc_series = self.get_serieslist(session)
 
-			# Serialize results to JSON
-			return self.send_response(json.dumps(
-				[self.orthanc_seriesjson(cs) for cs in self.paginate_query_results(
-					orthanc_series, self.offset or 0, self.limit)],
-				cls=SonadorJsonEncoder))
+				# Serialize results to JSON
+				return self.send_response(json.dumps(
+					[self.orthanc_seriesjson(cs) for cs in self.paginate_query_results(
+						orthanc_series, self.offset or 0, self.limit)],
+					cls=SonadorJsonEncoder))
+
+		except ValueError as err:
+			logger.error(
+				'Unable to execute series search due to an error. Error: "%s"\n%s' % (err, traceback.format_exc()))
+			
+			return self.send_response(json.dumps({
+				gcapicodes.ERROR: '%s' % err, gcapicodes.STATUS: gcapicodes.FAIL,
+			}), status_code=400)
+
+		except Exception as err:
+			emsg = 'Unable to exceute series search due to an error. Error: "%s"'
+			logger.error('%s\n%s' % (emsg, traceback.format_exc()))
+
+			return self.send_response(json.dumps({
+				gcapicodes.ERROR: emsg, gcapicodes.STATUS: gcapicodes.FAIL
+			}), status_code=500)
 
 
 class SonadorSeriesResourceView(SonadorResourceBaseView):

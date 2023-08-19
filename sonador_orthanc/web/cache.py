@@ -185,6 +185,7 @@ class CacheIndexResourceView(ResourceUidMixin, OrthancBaseView):
 	sonador_manager = None
 	sessionmaker = None
 	dcm_privatetags = None
+	dcm_datetags = None
 
 	def setup(self, output, uri, request, *args, **kwargs):
 		'''	Verify that database properties, database models, and indexing method have been provided.
@@ -228,7 +229,8 @@ class CacheIndexResourceView(ResourceUidMixin, OrthancBaseView):
 				# Create copy of resource in cache
 				self.resource_index_method(
 					self.sonador_manager, session, r.publicid, link=self.link, 
-					dcm_privatetags=(self.dcm_privatetags or {}).get(self.resource_type))
+					dcm_privatetags=(self.dcm_privatetags or {}).get(self.resource_type),
+					dcm_datetags=tuple(filter(lambda dmeta: dmeta.resource == self.resource_type, (self.dcm_datetags or {}).get('Tags', {}).values())))
 				response[gcapicodes.STATUS] = gcapicodes.SUCCESS
 
 				return self.send_response(json.dumps(response, cls=SonadorJsonEncoder))
@@ -243,11 +245,13 @@ class CacheIndexResourceView(ResourceUidMixin, OrthancBaseView):
 			return self.http404_resource_not_found(response=response)
 
 		except Exception as err:
-			response.update({
-				gcapicodes.ERROR: 'Unable to index resource uid=%s. Error:\n%s' \
-					% (self.get_resource_uid(*args, **kwargs), err),
-				gcapicodes.STATUS: gcapicodes.FAIL,
-			})
+
+			# Output error to application log
+			emsg = 'Unable to index resource uid=%s. Error:\n%s' % (self.get_resource_uid(*args, **kwargs), err)
+			logger.error('%s\n%s' % (emsg, traceback.format_exc()))
+
+			# Return error message as part of response
+			response.update({ gcapicodes.ERROR: emsg, gcapicodes.STATUS: gcapicodes.FAIL,})
 			return self.send_response(json.dumps(response, cls=SonadorJsonEncoder), status_code=500)
 
 	def delete(self, output, uri, request, *args, **kwargs):
@@ -294,10 +298,13 @@ class CacheIndexResourceView(ResourceUidMixin, OrthancBaseView):
 			return self.http404_resource_not_found(response=response)
 
 		except Exception as err:
-			response.update({
-				gcapicodes.ERROR: 'Unable to remove resource uid=%s. Error\n%s' \
-					% (self.get_resource_uid(*args, **kwargs), err),
-			})
+
+			# Output error to application log
+			emsg = 'Unable to remove resource uid=%s. Error\n%s' % (self.get_resource_uid(*args, **kwargs), err)
+			logger.error('%s\n%s' % (emsg, traceback.format_exc()))
+
+			# Return error as part of response
+			response.update({ gcapicodes.ERROR: emsg, gcapicodes.STATUS: gcapicodes.FAIL })
 			return self.send_response(json.dumps(response, cls=SonadorJsonEncoder), status_code=500)
 
 
@@ -360,6 +367,7 @@ class CacheBulkIndexPatientView(CacheBulkIndexBaseView):
 	'''	REST endpoint which can be used to add patients to the Sonador cache.
 	'''
 	dcm_privatetags = None
+	dcm_datetags = None
 
 	def post(self, output, uri, request):
 		'''	Execute indexing operations for patient cache
@@ -414,6 +422,7 @@ class CacheBulkIndexStudyView(CacheBulkIndexBaseView):
 	'''	REST endpoint which can be used to add studies to the Sonador cache.
 	'''
 	dcm_privatetags = None
+	dcm_datetags = None
 
 	def post(self, output, uri, request):
 		'''	Execute indexing operations for study cache
@@ -468,6 +477,7 @@ class CacheBulkIndexSeriesView(CacheBulkIndexBaseView):
 	'''	REST endpoint which can be used to add DICOM series to the Sonador cache.
 	'''
 	dcm_privatetags = None
+	dcm_datetags = None
 
 	def post(self, output, uri, request):
 		'''	Execute indexing operations for series cache
@@ -526,6 +536,7 @@ class AdminRebuildCacheView(CacheBulkIndexBaseView):
 	cache_tables = (CacheSeries, CacheStudy, CachePatient)
 	index_batch_size = 100
 	dcm_privatetags = None
+	dcm_datetags = None
 
 	def setup(self, output, uri, request, *args, **kwargs):
 		super().setup(output, uri, request)
@@ -628,6 +639,7 @@ class CacheReconstructResourceView(ResourceUidMixin, CacheBaseView):
 	'''	Orthanc reconstruct view which re-indexes resources after they have been rebuilt.
 	'''	
 	dcm_privatetags = None
+	dcm_datetags = None
 
 	def setup(self, output, uri, request, *args, **kwargs):
 		'''	Verify that database properties, database models, and indexing method have been provided.
@@ -662,7 +674,8 @@ class CacheReconstructResourceView(ResourceUidMixin, CacheBaseView):
 
 				# Re-index resource			
 				self.resource_index_method(self.sonador_manager, session, r.publicid, link=self.link,
-					dcm_privatetags=(self.dcm_privatetags or {}).get(self.resource_type))
+					dcm_privatetags=(self.dcm_privatetags or {}).get(self.resource_type),
+					dcm_datetags=tuple(filter(lambda dmeta: dmeta.resource == self.resource_type, (self.dcm_datetags or {}).get('Tags', {}).values())))
 				response.update({ 'index': {
 						gcapicodes.OPCODE: self.resource_opcode,
 						gcapicodes.STATUS: gcapicodes.SUCCESS,
@@ -680,10 +693,13 @@ class CacheReconstructResourceView(ResourceUidMixin, CacheBaseView):
 			return self.http404_resource_not_found(json.dumps(response, cls=SonadorJsonEncoder))
 
 		except Exception as err:
+
+			# Log error to application log
 			logger.error('Unable to reconstruct resource uid=%s. Error="%s". Traceback:\n%s' % (
 				self.get_resource_uid(*args, **kwargs), err, traceback.format_exc()
 			))
 
+			# Return error as part of response
 			response.update({
 				gcapicodes.ERROR: 'Unable to reconstruct resource uid=%s. Error:\n%s' \
 					% (self.get_resource_uid(*args, **kwargs), err),

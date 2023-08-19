@@ -1,9 +1,10 @@
-import posixpath, pydicom, logging, json, copy, datetime
+import posixpath, pydicom, logging, json, copy, datetime, traceback
 import orthanc
 
 from sqlalchemy.orm import joinedload
 from sqlalchemy import or_, and_
 
+import client.apisettings as gcapicodes
 from client.errors import ConfigurationError
 from client.utils.object import omit, pick
 from client.utils.urls import build_url
@@ -17,8 +18,8 @@ from sonador.serialization import dcm_str2date, SonadorJsonEncoder
 
 from sonador_orthanc_common.servers import ResponseLikeObject, local_orthanc_apiurl
 
+from ..apisettings import SONADOR_CACHE_ORDER_BY
 from ..db.cache import CachePatient, CacheStudy, CacheSeries
-from ..db.dcmext import CachePatientPrivateTags
 from ..db.helpers import cache_orthanc_patientjson
 from ..dcmquery.patient import CachePatientQueryMixin
 
@@ -65,6 +66,7 @@ class CachePatientQueryView(CachePatientListBaseView):
 		self.study_modalities = self.POST.get(DCMHEADER_MODALITIES_IN_STUDY)
 		self.study_date_filter = self.query.get(DCMHEADER_STUDY_DATE)
 		self.series_date_filter = self.query.get(DCMHEADER_SERIES_DATE)
+		self.order_by = self.POST.get(SONADOR_CACHE_ORDER_BY)
 
 	def orthanc_patientjson(self, cpatient):
 		'''	Create Orthanc JSON response for the provided cached patient
@@ -74,16 +76,33 @@ class CachePatientQueryView(CachePatientListBaseView):
 	def post(self, output, uri, request):
 		'''	Return list of patients which match the request parameters
 		'''
-		with self.sessionmaker() as session:
+		try:
+			with self.sessionmaker() as session:
 
-			# Retrieve Orthanc patients
-			orthanc_patients = self.get_patientlist(session)
+				# Retrieve Orthanc patients
+				orthanc_patients = self.get_patientlist(session)
 
-			# Serialize results to JSON
-			return self.send_response(json.dumps(
-				[self.orthanc_patientjson(cp) for cp in self.paginate_query_results(
-					orthanc_patients, self.offset or 0, self.limit)],
-				cls=SonadorJsonEncoder))
+				# Serialize results to JSON
+				return self.send_response(json.dumps(
+					[self.orthanc_patientjson(cp) for cp in self.paginate_query_results(
+						orthanc_patients, self.offset or 0, self.limit)],
+					cls=SonadorJsonEncoder))
+
+		except ValueError as err:
+			logger.error(
+				'Unable to execute patient search due to an error. Error: "%s"\n%s' % (err, traceback.format_exc()))
+			
+			return self.send_response(json.dumps({
+				gcapicodes.ERROR: '%s' % err, gcapicodes.STATUS: gcapicodes.FAIL,
+			}), status_code=400)
+
+		except Exception as err:
+			emsg = 'Unable to exceute patient search due to an error. Error: "%s"'
+			logger.error('%s\n%s' % (emsg, traceback.format_exc()))
+
+			return self.send_response(json.dumps({
+				gcapicodes.ERROR: emsg, gcapicodes.STATUS: gcapicodes.FAIL
+			}), status_code=500)
 
 
 class SonadorPatientResourceView(SonadorResourceBaseView):

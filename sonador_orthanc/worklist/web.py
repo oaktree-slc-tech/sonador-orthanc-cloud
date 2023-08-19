@@ -8,8 +8,8 @@ from client.errors import ConfigurationError
 
 from ..db.worklist import ProcedureStep
 
-from .base import OrthancBaseView
-from .helpers import paginate_query_results
+from ..web.base import OrthancBaseView
+from ..web.helpers import paginate_query_results
 
 
 class ProcedureStepManagementView(OrthancBaseView):

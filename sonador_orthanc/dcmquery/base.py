@@ -1,6 +1,6 @@
 import logging, abc, datetime
 from abc import ABC
-from typing import Union
+from typing import Union, Sequence
 
 from client.errors import ConfigurationError
 from client.utils.object import omit, pick
@@ -10,7 +10,7 @@ from sonador.apisettings import \
 	DCM_QUERY_ALLFIELDS
 from sonador.serialization import dcm_str2date
 
-from ..db.cache import CachePatient, CacheStudy, CacheSeries
+from ..db.cache import CachePatient, CacheStudy, CacheSeries, SONADOR_CACHE_MODELS
 from ..db.helpers import dcmquery2psqlregex, dcmquery_psqlregex_flags
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,9 @@ class DicomQueryMixin(ABC):
 	resource_model = None
 	cache_dicomtags = None
 	dcm_privatetags = None
+	dcm_datetags = None
 	dicom_query = None
+	order_by = None
 
 	def _init_dcmquery(self, *args, **kwargs):
 		'''	Ensure that required class components are present
@@ -80,8 +82,8 @@ class DicomQueryMixin(ABC):
 
 			# Parse to dates. For ranges with a start component (but not a stop component),
 			# OHIF will a value less than the start. If that is the case, set the stop component to be None.
-			rdate_start, rdate_stop = dcm_str2date(rdate_components[0]), dcm_str2date(rdate_components[1])
-			if rdate_stop < rdate_start:
+			rdate_start, rdate_stop = dcm_str2date(rdate_components[0]) if rdate_components[0] else None, dcm_str2date(rdate_components[1]) if rdate_components[1] else None
+			if (rdate_start and rdate_stop) and rdate_stop < rdate_start:
 				rdate_stop = None
 
 			if rdate_start:
@@ -102,7 +104,7 @@ class DicomQueryMixin(ABC):
 		# Match study date exactly. Because the CacheStudy.ts is a date/time, a range must
 		# be used to match studies for the desired time period.
 		else:
-			rdate = dcm_str2date(self.study_date_filter)
+			rdate = dcm_str2date(dcmquery_val)
 			rdate_start_ts = datetime.datetime.combine(rdate, datetime.time(0,0,0))
 			rdate_stop_ts = datetime.datetime.combine(rdate, datetime.time(23,59,59))
 
@@ -234,6 +236,53 @@ class DicomQueryMixin(ABC):
 			@returns filtered query
 		'''
 
+	def apply_ordering(self, dcm_resources, order_by: Sequence[str], **kwargs):
+		'''	Apply ordering options to the DICOM resource query
+
+			@returns ordered query
+		'''
+		orderby_fields = kwargs.get('orderby_fields') or []
+
+		# Retrieve dataabase field for provided header
+		for otag in order_by:
+
+			# Determine whether ascending or descending for sort order
+			if otag.startswith('-'):
+				otag = otag.replace('-', '')
+				desc = True
+			else: desc = False
+
+			# Determine the type of tag: resource level (Patient, Study, Series) and whether it is public/private
+			resource_type = private_tag = None
+
+			# Determine which level of the API at which to apply the header
+			for rtype,rtags in self.cache_dicomtags.items():
+				if otag in rtags:
+					resource_type = rtype
+					break
+
+			# Determine if the header is public or private
+			if self.dcm_privatetags:
+				for rtype,ptags in self.dcm_privatetags.items():
+					if otag in ptags:
+						private_tag = True
+
+			# Unable to locate private tag, mark as public
+			if resource_type and private_tag is None:
+				private_tag = False
+			else:
+				raise ValueError('Unable to order resources. Invalid DICOM header "%s".' % otag)
+
+			# Retrieve tag model and add to ordering options
+			tag_resource_model = SONADOR_CACHE_MODELS.get(resource_type)
+			if private_tag:
+				tag_resource_model = tag_resource_model.privatetags_resource_model			
+
+			orderby_fields.append(
+				tag_resource_model.orthanc[otag].astext.desc() if desc else tag_resource_model.orthanc[otag].astext)
+
+		return dcm_resources.order_by(*tuple(orderby_fields))
+
 	def execute_resource_query(self, session, *args, **kwargs):
 		'''	Execute resource query
 		'''
@@ -282,6 +331,10 @@ class DicomQueryMixin(ABC):
 
 			# Add regex to database filter
 			resources = self.apply_series_queryfilter(resources, series_tagname, series_queryfilter)
+
+		# Apply ordering
+		if self.order_by:
+			resources = self.apply_ordering(resources, self.order_by)
 
 		return resources
 
