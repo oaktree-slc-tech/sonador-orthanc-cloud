@@ -219,6 +219,10 @@ def remove_cache_serverchange_callback(sonador_manager: SonadorServerManager, se
 				pc = session.query(cachemodel.privatetags_resource_model).get(resource)
 				if pc: session.delete(pc)
 
+				# Remove indexed date/time tags
+				for dc in session.query(cachemodel.datetime_resource_model).filter_by(uid=resource):
+					session.delete(dc)
+
 				# Commit changes to database
 				session.commit()
 

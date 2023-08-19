@@ -1,4 +1,6 @@
 import abc, logging
+from typing import Union, Sequence
+from collections import OrderedDict
 
 from sqlalchemy import Column, ForeignKey, Integer as SqlInteger, String as SqlString, \
 	DateTime as SqlDateTime, Boolean as SqlBoolean
@@ -10,7 +12,8 @@ from client.utils.object import pick
 from client.utils.decorators import classproperty
 
 from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, \
-	IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_REPORT
+	IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_REPORT, \
+	DicomDatetimePairKey, DicomDatetimePair
 from sonador.imaging.orthanc.base import ImagingSeries, ImagingStudy, ImagingPatient
 
 from .base import DbBase, AutoDbBase
@@ -62,7 +65,7 @@ class CacheResourceMixin(CacheResourceDbPropertiesMixin):
 			@input rinstance: Sonador resource instance for which the private tags model
 				should be retrieved or initialized.
 
-			@returns instance privatetags_resource_model
+			@returns instance of privatetags_resource_model
 		'''
 		pci = session.query(privatetags_resource_model).filter_by(uid=rinstance.pk).first()
 		if not pci:
@@ -77,10 +80,39 @@ class CacheResourceMixin(CacheResourceDbPropertiesMixin):
 		logger.debug('Private Tags: resource=%s\n%s' % (pci.uid, pci.orthanc))
 		return pci
 
+	@classmethod
+	def _init_dcmdatetag(cls, datetime_resource_model, session, rinstance, dcm_datetag_val, **kwargs):
+		'''	Initialize (or retrieve) the cached model for the provided instance and date/time headers.
+
+			@input datetime_resource_model: SQLAlchemy resource model used to store the date/time
+				tags for the instance.
+			@input session: SQLAlchemy database session.
+			@input rinstance: Sonador resource instance for which the date/time model should
+				be retrieved or initialized.
+
+			@returns instance of datetime_resource_model
+		'''
+		dci = session.query(datetime_resource_model).filter_by(
+			uid=rinstance.pk, date_tag=dcm_datetag_val.meta.date_tag, time_tag=dcm_datetag_val.meta.time_tag).first()
+		if not dci:
+			dci = datetime_resource_model(
+				uid=rinstance.pk, date_tag=dcm_datetag_val.meta.date_tag, time_tag=dcm_datetag_val.meta.time_tag)
+
+		dci.ts = dcm_datetag_val.ts
+		logger.debug('Date/Time Tag: resource=%s date-tag=%s time-tag=%s value=%s'
+			% (rinstance.pk, dcm_datetag_val.meta.date_tag, dcm_datetag_val.meta.time_tag, dcm_datetag_val.ts))
+		return dci
+
 	@classproperty
 	@abc.abstractmethod
-	def privatetags_resource_model(self):
+	def privatetags_resource_model(cls):
 		'''	Private DICOM tags extension model associated with the resource
+		'''
+
+	@classproperty
+	@abc.abstractmethod
+	def datetime_resource_model(cls):
+		'''	Date/time extension model associated with the resource
 		'''
 
 	@classmethod
@@ -90,6 +122,32 @@ class CacheResourceMixin(CacheResourceDbPropertiesMixin):
 
 			@input rinstance: Sonador resource instance for which the private tags should be retrieved
 		'''
+
+	@classmethod
+	def _get_dcmdatetags(cls, 
+			instance: Union[ImagingPatient, ImagingStudy, ImagingSeries], 
+			dcm_datetags: Sequence[DicomDatetimePairKey], dcache=None,**kwargs):
+		''' Retrieve the provided date/time tags from the instance.
+
+			@input instance (ImagingPatient, ImagingStudy, or ImagingSeries instance): instance from 
+				which the data should be taken.
+			@input dcm_datetimes (iterable of DicomDatetimePairKey instances): header values
+				to retrieve from the instance.
+
+			@returns OrderedDict: date time dags and the associated values. The dictionary
+				 returns DicomDatetimePair objects keyed to the provided DicomDatetimePairKey instances.
+		'''
+		dcache = dcache or OrderedDict()
+
+		# Retrieve date/time tags 
+		for dmeta in dcm_datetags:
+
+			# Omit pairs for which the date tag is not defined
+			if instance.dicomdata.get(dmeta.date_tag):
+				dcache[dmeta] = DicomDatetimePair(
+					instance.dicomdata.get(dmeta.date_tag), instance.dicomdata.get(dmeta.time_tag), meta=dmeta)
+				
+		return dcache
 
 	@classmethod
 	@abc.abstractmethod
@@ -103,12 +161,14 @@ class CachePatient(CacheResourceMixin, DbBase):
 
 	birth_date = Column(SqlDateTime(), nullable=True)
 
-	privatetags = relationship('CachePatientPrivateTags', overlaps='patient,privatetags', back_populates='patient',
-		primaryjoin='CachePatient.uid == foreign(CachePatientPrivateTags.uid)', viewonly=True, uselist=False)
-
 	studies = Column(ARRAY(SqlString(64), as_tuple=False, dimensions=None, zero_indexes=False))
 	studies_collection = relationship(
 		'CacheStudy', back_populates='parent', overlaps='studies_collection,parent', viewonly=True)
+
+	privatetags = relationship('CachePatientPrivateTags', overlaps='patient,privatetags', back_populates='patient',
+		primaryjoin='CachePatient.uid == foreign(CachePatientPrivateTags.uid)', viewonly=True, uselist=False)
+	timestamp_tags = relationship('CachePatientDatetime', overlaps='patient,timestamp_tags', back_populates='patient',
+		primaryjoin='CachePatient.uid == foreign(CachePatientDatetime.uid)', viewonly=True)
 
 	@classproperty
 	def type(cls):
@@ -123,6 +183,13 @@ class CachePatient(CacheResourceMixin, DbBase):
 	def privatetags_resource_model(cls):
 		from .dcmext import CachePatientPrivateTags
 		return CachePatientPrivateTags
+
+	@classproperty
+	def datetime_resource_model(cls):
+		'''	Date/time extension model associated with the resource
+		'''
+		from .dcmext import CachePatientDatetime
+		return CachePatientDatetime
 
 	@classmethod
 	def _get_dcmtags(cls, instance, study_idx=0, series_idx=0, dcm_idx=0):
@@ -150,7 +217,7 @@ class CachePatient(CacheResourceMixin, DbBase):
 		return dcm0.tags
 
 	@classmethod
-	def index(cls, session, instance: ImagingPatient, commit=True, dcm_privatetags=None, **kwargs):
+	def index(cls, session, instance: ImagingPatient, commit=True, dcm_privatetags=None, dcm_datetags=None, **kwargs):
 		'''	Initialize a copy of the patient in the index
 		'''
 		ci = cls._init_cache_instance(session, instance)
@@ -162,6 +229,13 @@ class CachePatient(CacheResourceMixin, DbBase):
 			pci = cls._init_privatetags(
 				cls.privatetags_resource_model, session, instance, dcm_privatetags)
 			session.add(pci)
+
+		# Created indexed copies of date/time tags
+		if dcm_datetags:			
+			for dcm_datetag_val in cls._get_dcmdatetags(instance, dcm_datetags=dcm_datetags).values():
+				dci = cls._init_dcmdatetag(
+					cls.datetime_resource_model, session, instance, dcm_datetag_val)
+				session.add(dci)
 
 		# Add cached instance to session and (if indicated) commit
 		session.add(ci)
@@ -182,11 +256,13 @@ class CacheStudy(CacheResourceMixin, DbBase):
 		SqlString(64), ForeignKey('sonador_cache_patient.uid', ondelete='CASCADE'), nullable=True)
 	parent = relationship('CachePatient', overlaps='parent,studies_collection', viewonly=True)
 	
-	privatetags = relationship('CacheStudyPrivateTags', overlaps='study,privatetags', back_populates='study',
-		primaryjoin='CacheStudy.uid == foreign(CacheStudyPrivateTags.uid)', viewonly=True, uselist=False)
-	
 	series_collection = relationship(
 		'CacheSeries', back_populates='parent', overlaps='parent,series_collection', viewonly=True)
+
+	privatetags = relationship('CacheStudyPrivateTags', overlaps='study,privatetags', back_populates='study',
+		primaryjoin='CacheStudy.uid == foreign(CacheStudyPrivateTags.uid)', viewonly=True, uselist=False)
+	timestamp_tags = relationship('CacheStudyDatetime', overlaps='study,timestamp_tags', back_populates='study',
+		primaryjoin='CacheStudy.uid == foreign(CacheStudyDatetime.uid)', viewonly=True)
 
 	@classproperty
 	def type(cls):
@@ -201,6 +277,13 @@ class CacheStudy(CacheResourceMixin, DbBase):
 	def privatetags_resource_model(cls):
 		from .dcmext import CacheStudyPrivateTags
 		return CacheStudyPrivateTags
+
+	@classproperty
+	def datetime_resource_model(cls):
+		'''	Date/time extension model associated with the resource
+		'''
+		from .dcmext import CacheStudyDatetime
+		return CacheStudyDatetime
 
 	@classmethod
 	def _get_dcmtags(cls, instance, series_idx=0, dcm_idx=0):
@@ -221,11 +304,10 @@ class CacheStudy(CacheResourceMixin, DbBase):
 		return dcm0.tags
 
 	@classmethod
-	def index(cls, session, instance: ImagingStudy, link=True, commit=True, dcm_privatetags=None, **kwargs):
+	def index(cls, session, instance: ImagingStudy, 
+			link=True, commit=True, dcm_privatetags=None, dcm_datetags=None, **kwargs):
 		'''	Initialize a copy of the study in the index
 		'''
-		from .dcmext import CacheStudyPrivateTags
-
 		ci = cls._init_cache_instance(session, instance)
 		ci.series = getattr(instance, 'series', [])
 		ci.modalities = list(set([sx.modality for sx in instance.series_collection if sx.modality]))
@@ -240,6 +322,13 @@ class CacheStudy(CacheResourceMixin, DbBase):
 			pci = cls._init_privatetags(
 				cls.privatetags_resource_model, session, instance, dcm_privatetags)
 			session.add(pci)
+
+		# Created indexed copies of date/time tags
+		if dcm_datetags:
+			for dcm_datetag_val in cls._get_dcmdatetags(instance, dcm_datetags=dcm_datetags).values():
+				dci = cls._init_dcmdatetag(
+					cls.datetime_resource_model, session, instance, dcm_datetag_val)
+				session.add(dci)
 
 		# Add cached instance to session and (if indicated) commit
 		session.add(ci)
@@ -259,9 +348,10 @@ class CacheSeries(CacheResourceMixin, DbBase):
 		SqlString(64), ForeignKey('sonador_cache_study.uid', ondelete='CASCADE'), nullable=True)
 	parent = relationship('CacheStudy', overlaps='series_collection,parent', viewonly=True)
 	
-	privatetags = relationship('CacheSeriesPrivateTags', overlaps='study,privatetags', back_populates='series',
-		primaryjoin='CacheSeries.uid == foreign(CacheSeriesPrivateTags.uid)', 
-		viewonly=True, uselist=False)
+	privatetags = relationship('CacheSeriesPrivateTags', overlaps='series,privatetags', back_populates='series',
+		primaryjoin='CacheSeries.uid == foreign(CacheSeriesPrivateTags.uid)', viewonly=True, uselist=False)
+	timestamp_tags = relationship('CacheSeriesDatetime', overlaps='series,timestamp_tags', back_populates='series',
+		primaryjoin='CacheSeries.uid == foreign(CacheSeriesDatetime.uid)', viewonly=True)
 
 	@classproperty
 	def type(cls):
@@ -277,6 +367,13 @@ class CacheSeries(CacheResourceMixin, DbBase):
 		from .dcmext import CacheSeriesPrivateTags
 		return CacheSeriesPrivateTags
 
+	@classproperty
+	def datetime_resource_model(cls):
+		'''	Date/time extension model associated with the resource
+		'''
+		from .dcmext import CacheSeriesDatetime
+		return CacheSeriesDatetime
+
 	@classmethod
 	def _get_dcmtags(cls, instance, dcm_idx=0):
 		'''	Retrieve DICOM tags from specified instance for series
@@ -287,14 +384,13 @@ class CacheSeries(CacheResourceMixin, DbBase):
 			raise ValueError('Unable to retrieve DICOM tags, series=%s has no child instances.' % instance.pk)
 
 		dcm0 = instance.slices_collection[dcm_idx]
-		return dc0.tags
+		return dcm0.tags
 
 	@classmethod
-	def index(cls, session, instance: ImagingSeries, link=True, commit=True, dcm_privatetags=None, **kwargs):
+	def index(cls, session, instance: ImagingSeries, 
+			link=True, commit=True, dcm_privatetags=None, dcm_datetags=None, **kwargs):
 		'''	Initialize a copy of the series in the index
 		'''
-		from .dcmext import CacheSeriesPrivateTags
-
 		ci = cls._init_cache_instance(session, instance)
 		ci.instances = instance.slices
 		ci.ts = instance.ts
@@ -309,9 +405,23 @@ class CacheSeries(CacheResourceMixin, DbBase):
 				cls.privatetags_resource_model, session, instance, dcm_privatetags)
 			session.add(pci)
 
+		# Created indexed copies of date/time tags
+		if dcm_datetags:			
+			for dcm_datetag_val in cls._get_dcmdatetags(instance, dcm_datetags=dcm_datetags).values():
+				dci = cls._init_dcmdatetag(
+					cls.datetime_resource_model, session, instance, dcm_datetag_val)
+				session.add(dci)
+
 		# Add cached instance to session and (if indicated) commit
 		session.add(ci)
 		if commit:
 			session.commit()
 
 		return ci
+
+
+SONADOR_CACHE_MODELS = {
+	IMAGING_SERVER_RESOURCE_PATIENT: CachePatient,
+	IMAGING_SERVER_RESOURCE_STUDY: CacheStudy,
+	IMAGING_SERVER_RESOURCE_SERIES: CacheSeries,
+}

@@ -103,7 +103,7 @@ def cache_orthanc_seriesjson(cseries, resource_type=None):
 	'''
 	if getattr(cseries, 'privatetags', None):
 		dcmtags_main = copy.deepcopy(cseries.orthanc)
-		dcmtags_main.update(cstudy.privatetags.orthanc)
+		dcmtags_main.update(cseries.privatetags.orthanc)
 	else: dcmtags_main = cseries.orthanc
 
 	dcm = { 'ID': cseries.uid, 'MainDicomTags': dcmtags_main, 'Type': resource_type or cseries.type }

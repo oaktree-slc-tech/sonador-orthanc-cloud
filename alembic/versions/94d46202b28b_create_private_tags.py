@@ -19,7 +19,7 @@ depends_on = None
 
 
 def upgrade():
-    ''' Create tags for patient, study, and series private tags
+    ''' Create private tag models for patient, study, and series
     '''
     op.create_table('sonador_cache_patient_private',
         sa.Column('uid', sa.String(length=64), primary_key=True, unique=True),

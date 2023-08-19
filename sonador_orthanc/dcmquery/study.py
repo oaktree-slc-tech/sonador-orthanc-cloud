@@ -10,7 +10,6 @@ from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_
 	DCMHEADER_MODALITIES_IN_STUDY, DCMHEADER_MODALITY, DCMHEADER_SERIES_DATE, DCMHEADER_STUDY_DATE
 
 from ..db.cache import CachePatient, CacheStudy, CacheSeries
-from ..db.dcmext import CachePatientPrivateTags, CacheStudyPrivateTags, CacheSeriesPrivateTags
 from ..db.helpers import dcmquery_psqlregex_flags
 
 logger = logging.getLogger(__name__)
@@ -92,7 +91,7 @@ class CacheStudyQueryMixin(object):
 			series_private_tagquery = self._series_querycondition_or(
 				dict((sxtag, allfields_queryfilter) for sxtag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES)),
 				privatetags=True, **kwargs)
-			series_querycondition |= CacheStudy.series_collection.any(CacheSeries.privatetags.any(series_private_tagquery))
+			series_querycondition |= CacheStudy.series_collection.any(CacheSeries.privatetags.has(series_private_tagquery))
 
 		return dcm_resources.filter(patient_querycondition | study_tagquery | series_querycondition)
 	
@@ -101,6 +100,33 @@ class CacheStudyQueryMixin(object):
 		'''	Apply a patient filter to the resource list. For a study query the patient tags are applied
 			to the orthanc JSONB property of the CacheStudy.parent relationship using a regular expression match.
 		'''	
+		# Query date/time tags
+		if self.dcm_datetags and patient_tagname in self.dcm_datetags.get('Tags', {}) \
+			and self.dcm_datetags.get('Tags', {}).get(patient_tagname).resource == IMAGING_SERVER_RESOURCE_PATIENT:
+
+			# Parse query filter to start/stop timestamps
+			pdate_dcmts = self.dcm_datetags.get('Tags', {}).get(patient_tagname)
+			pdate_start_ts, pdate_stop_ts = self.parse_dcmdate_queryfilter(patient_queryfilter)
+
+			# Apply date filter
+			if pdate_start_ts:				
+				dcm_resources = dcm_resources.filter(CacheStudy.parent.has(
+					CachePatient.timestamp_tags.any(and_(
+						CachePatient.datetime_resource_model.date_tag == pdate_dcmts.date_tag,
+						CachePatient.datetime_resource_model.time_tag == pdate_dcmts.time_tag,
+						CachePatient.datetime_resource_model.ts >= pdate_start_ts,
+				))))
+
+			if pdate_stop_ts:				
+				dcm_resources = dcm_resources.filter(CacheStudy.parent.has(
+					CachePatient.timestamp_tags.any(and_(
+						CachePatient.datetime_resource_model.date_tag == pdate_dcmts.date_tag,
+						CachePatient.datetime_resource_model.time_tag == pdate_dcmts.time_tag,
+						CachePatient.datetime_resource_model.ts <= pdate_stop_ts,
+				))))
+			
+			return dcm_resources
+
 		# Query patient private tags
 		if self.dcm_privatetags and self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_PATIENT) \
 			and patient_tagname in self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_PATIENT, []):
@@ -117,8 +143,33 @@ class CacheStudyQueryMixin(object):
 		'''	Apply a study filter to the resource list. For a study query, the tags are applied to the 
 			CacheStudy.orthanc JSONB property using a regular expression match.
 		'''
+		# Query date/time tags
+		if self.dcm_datetags and study_tagname in self.dcm_datetags.get('Tags', {}) \
+			and self.dcm_datetags.get('Tags', {}).get(study_tagname).resource == IMAGING_SERVER_RESOURCE_STUDY:
+
+			# Parse query filter to start/stop timestamps
+			sdate_dcmts = self.dcm_datetags.get('Tags', {}).get(study_tagname)
+			sdate_start_ts, sdate_stop_ts = self.parse_dcmdate_queryfilter(study_queryfilter)
+
+			# Apply date filter
+			if sdate_start_ts:				
+				dcm_resources = dcm_resources.filter(CacheStudy.timestamp_tags.any(and_(
+					CacheStudy.datetime_resource_model.date_tag == sdate_dcmts.date_tag,
+					CacheStudy.datetime_resource_model.time_tag == sdate_dcmts.time_tag,
+					CacheStudy.datetime_resource_model.ts >= sdate_start_ts,
+				)))
+
+			if sdate_stop_ts:				
+				dcm_resources = dcm_resources.filter(CacheStudy.timestamp_tags.any(and_(
+					CacheStudy.datetime_resource_model.date_tag == sdate_dcmts.date_tag,
+					CacheStudy.datetime_resource_model.time_tag == sdate_dcmts.time_tag,
+					CacheStudy.datetime_resource_model.ts <= sdate_stop_ts,
+				)))
+			
+			return dcm_resources
+
 		# Query study private tags
-		if self.dcm_privatetags and self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY) \
+		elif self.dcm_privatetags and self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY) \
 			and study_tagname in self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY, []):
 			return dcm_resources.filter(CacheStudy.privatetags.has(
 				self._study_querycondition(study_tagname, study_queryfilter, privatetags=True, **kwargs)))
@@ -131,6 +182,31 @@ class CacheStudyQueryMixin(object):
 		'''	Apply a series filter to the resource list. For a series query, the tags are applied to the 
 			CacheStudy.series_collection property.
 		'''
+		# Query date/time tags
+		if self.dcm_datetags and series_tagname in self.dcm_datetags.get('Tags', {}) \
+			and self.dcm_datetags.get('Tags', {}).get(series_tagname).resource == IMAGING_SERVER_RESOURCE_SERIES:
+
+			# Parse query filter to start/stop timestamps
+			sxdate_dcmts = self.dcm_datetags.get('Tags', {}).get(series_tagname)
+			sxdate_start_ts, sxdate_stop_ts = self.parse_dcmdate_queryfilter(series_queryfilter)
+
+			# Apply date filter
+			if sxdate_start_ts:				
+				dcm_resources = dcm_resources.filter(CacheStudy.series_collection.any(CacheSeries.timestamp_tags.any(and_(
+					CacheSeries.datetime_resource_model.date_tag == sxdate_dcmts.date_tag,
+					CacheSeries.datetime_resource_model.time_tag == sxdate_dcmts.time_tag,
+					CacheSeries.datetime_resource_model.ts >= sxdate_start_ts,
+				))))
+
+			if sxdate_stop_ts:				
+				dcm_resources = dcm_resources.filter(CacheStudy.series_collection.any(CacheSeries.timestamp_tags.any(and_(
+					CacheSeries.datetime_resource_model.date_tag == sxdate_dcmts.date_tag,
+					CacheSeries.datetime_resource_model.time_tag == sxdate_dcmts.time_tag,
+					CacheSeries.datetime_resource_model.ts <= sxdate_stop_ts,
+				))))
+			
+			return dcm_resources
+
 		# Query series private tags
 		if self.dcm_privatetags and self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES) \
 			and series_tagname in self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES, []):

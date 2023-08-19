@@ -6,9 +6,9 @@ from confluent_kafka import Producer
 
 from client.errors import ConfigurationError
 
-from sonador.apisettings import IMAGING_SERVER_RESOURCE_IMAGE, IMAGING_SERVER_RESOURCE_SERIES, \
-	IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_PATIENT, \
-	DCMHEADER_SERIES_INSTANCE_UID, DCMHEADER_STUDY_ID, DCMHEADER_PATIENT_ID
+from sonador.apisettings import DicomDatetimePairKey, \
+	IMAGING_SERVER_RESOURCE_IMAGE, IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_PATIENT, \
+	IMAGING_SERVER_RESOURCE_SUPPORTED, DCMHEADER_SERIES_INSTANCE_UID, DCMHEADER_STUDY_ID, DCMHEADER_PATIENT_ID
 from sonador.servers import SonadorServer, SonadorImagingServer
 
 from sonador_orthanc.apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, \
@@ -20,7 +20,7 @@ from sonador_orthanc.apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, \
 	ORTHANC_DEFAULT_ENCODING, \
 	SONADOR_RESOURCE_UPDATE_PATIENT, SONADOR_RESOURCE_UPDATE_STUDY, SONADOR_RESOURCE_UPDATE_SERIES, \
 	SONADOR_RESOURCE_DELETE_PATIENT, SONADOR_RESOURCE_DELETE_STUDY, SONADOR_RESOURCE_DELETE_SERIES, \
-	SONADOR_CONF_PRIVATE_DICT, SONADOR_CONF_PRIVATE_TAGS
+	SONADOR_CONF_PRIVATE_DICT, SONADOR_CONF_PRIVATE_TAGS, SONADOR_CONF_DATETIME_TAGS
 from sonador_orthanc.helpers import init_sonador_server
 from sonador_orthanc.manager import SonadorServerManager, \
 	TIMER_30S, TIMER_MINUTE, TIMER_10MIN, TIMER_30MIN, TIMER_HOUR, TIMER_DAILY
@@ -42,22 +42,6 @@ CONF = json.loads(orthanc.GetConfiguration())
 CONF_SONADOR = CONF.get(ORTHANC_CONFIG_SECTION_SONADOR, {})
 CONF_POSTGRESQL = CONF.get(ORTHANC_CONFIG_SECTION_POSTGRES, {})
 CONF_DICOMWEB = CONF.get(ORTHANC_CONFIG_SECTION_DICOMWEB, {})
-
-# Private DICOM Tags
-CONF_DICOM_PRIVATEDICT = CONF.get(SONADOR_CONF_PRIVATE_DICT, {})
-CONF_DICOM_PRIVATEDICT['TagNames'] = set(t[1] for t in CONF_DICOM_PRIVATEDICT.values())
-CONF_DICOM_PRIVATETAGS = CONF.get(SONADOR_CONF_PRIVATE_TAGS, {})
-
-# Ensure that all private tags in "PrivateMainDicomTags" have been registered with Orthanc.
-for ptag in itertools.chain(
-	CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_PATIENT, []),
-	CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_STUDY, []),
-	CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_SERIES, [])):
-	
-	if not ptag in CONF_DICOM_PRIVATEDICT['TagNames']:
-		raise ConfigurationError(('Invalid configuration. Private tag "%s" included in PrivateMainDicomTags which is not '
-				+ 'registered in the Orthanc Dictionary. Please refer to: https://oak-tree.tech/blog/soandor-orthanc-private-headers')
-			 % ptag)
 
 
 # Initialize Sonador API client and check that all required authentication
@@ -327,9 +311,58 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 		import sonador_orthanc.tasks.maintenance.cache as sonador_cache_maintenance
 		import sonador_orthanc.db.cache as sonador_cachedb
 
+		# Private DICOM Tags
+		CONF_DICOM_PRIVATEDICT = CONF.get(SONADOR_CONF_PRIVATE_DICT, {})
+		CONF_DICOM_PRIVATEDICT['Tags'] = set(t[1] for t in CONF_DICOM_PRIVATEDICT.values())
+		CONF_DICOM_PRIVATETAGS = CONF.get(SONADOR_CONF_PRIVATE_TAGS, {})
+		CONF_DICOM_DATETIME_TAGS = CONF.get(SONADOR_CONF_DATETIME_TAGS, {})
+		CONF_DICOM_DATETIME_TAGS['Tags'] = {}
+
 		# Orthanc DICOM tags cache
 		from sonador_orthanc.helpers import orthanc_maindicom_tags
 		CACHE_DICOMTAGS = orthanc_maindicom_tags(CONF, dcm_privatetags=CONF_DICOM_PRIVATETAGS)
+
+		# Ensure that all private tags in "PrivateMainDicomTags" have been registered with Orthanc.
+		for ptag in itertools.chain(
+			CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_PATIENT, []),
+			CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_STUDY, []),
+			CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_SERIES, [])):
+	
+			if not ptag in CONF_DICOM_PRIVATEDICT['Tags']:
+				raise ConfigurationError(('Invalid configuration. Private tag "%s" included in PrivateMainDicomTags which is not '
+					+ 'registered in the Orthanc Dictionary. Please refer to: https://oak-tree.tech/blog/soandor-orthanc-private-headers')
+			 	% ptag)
+
+		# Ensure that all date/time tags are included in the extra main DICOM tags
+		for rtype,rdatetime_tags in CONF_DICOM_DATETIME_TAGS.items():
+
+			if rtype in IMAGING_SERVER_RESOURCE_SUPPORTED:
+
+				for dtags in rdatetime_tags:
+					dtags = list(dtags.split(','))					
+
+					# Only a single tag defined (assume to be a date tag), add a "blank" string for the time
+					if len(dtags) == 1:
+						dtags[1] = ''
+
+					# More than two components defined. Date/time tags should be of the form: DateTag,TimeTag
+					elif len(dtags) > 2:
+						raise ValueError(('Invalid %s configuration "%s". Datetime tags must be date values or date/time pairs.'
+							+  'Examples: "SeriesDate", "SeriesDate,SeriesTime"' ) % (SONADOR_CONF_DATETIME_TAGS, ','.join(dtags)))
+
+					dtmeta = DicomDatetimePairKey(rtype, *tuple(dtags))
+					CONF_DICOM_DATETIME_TAGS['Tags'][dtmeta.date_tag] = dtmeta
+
+					# Ensure that the date tag is registered in the API response tagset
+					if not dtmeta.date_tag in CACHE_DICOMTAGS.get(dtmeta.resource, []):
+						raise ConfigurationError('Invalid %s configuration. Tag "%s" (resource=%s) not configured for ExtraMainDicomTags.' % (
+							SONADOR_CONF_DATETIME_TAGS, dtmeta.date_tag, dtmeta.resource,
+						))
+
+					if dtmeta.time_tag and not dtmeta.time_tag in CACHE_DICOMTAGS.get(dtmeta.resource, []):
+						raise ConfigurationError('Invalid %s configuration. Tag "%s" (resource=%s) not configured for ExtraMainDicomTags.' % (
+							SONADOR_CONF_DATETIME_TAGS, dtmeta.time_tag, dtmeta.resource,
+						))
 
 		# Enable DICOMweb endpoint overrides
 		if CONF_DICOMWEB and CONF_DICOMWEB.get('Enable'):
@@ -345,11 +378,14 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 		from sonador_orthanc.web.series import CacheSeriesQueryView, SonadorSeriesResourceView
 		
 		orthanc.RegisterRestCallback('/cache/patients', CachePatientQueryView.as_view(
-			sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS, dcm_privatetags=CONF_DICOM_PRIVATETAGS))
+			sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS, dcm_privatetags=CONF_DICOM_PRIVATETAGS,
+			dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 		orthanc.RegisterRestCallback('/cache/studies', CacheStudyQueryView.as_view(
-			sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS, dcm_privatetags=CONF_DICOM_PRIVATETAGS))
+			sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS, dcm_privatetags=CONF_DICOM_PRIVATETAGS,
+			dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 		orthanc.RegisterRestCallback('/cache/series', CacheSeriesQueryView.as_view(
-			sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS, dcm_privatetags=CONF_DICOM_PRIVATETAGS))
+			sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS, dcm_privatetags=CONF_DICOM_PRIVATETAGS,
+			dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 
 		# Cache overrides of patient, study, and series
 		orthanc.RegisterRestCallback(r'/patients/([0-9a-fA-F]{8}\-?){5}',
@@ -390,47 +426,47 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 		# Rebuild resource cache
 		orthanc.RegisterRestCallback('/cache/admin/rebuild', sonador_cache.AdminRebuildCacheView.as_view(
 			sonador_manager=ORTHANC_SONADOR_MANAGER, dbengine=ORTHANC_SQLENGINE, sessionmaker=OrthancSession, threadpool=tpool,
-			dcm_privatetags=CONF_DICOM_PRIVATETAGS))
+			dcm_privatetags=CONF_DICOM_PRIVATETAGS, dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 
 		# Bulk index of patients, studies, series
 		orthanc.RegisterRestCallback('/cache/admin/index/patients', sonador_cache.CacheBulkIndexPatientView.as_view(
 			sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession, threadpool=tpool, 
-			dcm_privatetags=CONF_DICOM_PRIVATETAGS))
+			dcm_privatetags=CONF_DICOM_PRIVATETAGS, dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 		orthanc.RegisterRestCallback('/cache/admin/index/studies', sonador_cache.CacheBulkIndexStudyView.as_view(
 			sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession, threadpool=tpool,
-			dcm_privatetags=CONF_DICOM_PRIVATETAGS))
+			dcm_privatetags=CONF_DICOM_PRIVATETAGS, dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 		orthanc.RegisterRestCallback('/cache/admin/index/series', sonador_cache.CacheBulkIndexSeriesView.as_view(
 			sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession, threadpool=tpool,
-			dcm_privatetags=CONF_DICOM_PRIVATETAGS))
+			dcm_privatetags=CONF_DICOM_PRIVATETAGS, dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 
 		# Individual index of patients, studies, series
 		orthanc.RegisterRestCallback(
 			r'/cache/patients/([0-9a-fA-F]{8}\-?){5}/index', 
 			sonador_cache.CacheIndexResourceView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession,
-				resource_cachemodel=sonador_cachedb.CachePatient, dcm_privatetags=CONF_DICOM_PRIVATETAGS))
+				resource_cachemodel=sonador_cachedb.CachePatient, dcm_privatetags=CONF_DICOM_PRIVATETAGS, dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 		orthanc.RegisterRestCallback(
 			r'/cache/studies/([0-9a-fA-F]{8}\-?){5}/index', 
 			sonador_cache.CacheIndexResourceView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession,
-				resource_cachemodel=sonador_cachedb.CacheStudy, dcm_privatetags=CONF_DICOM_PRIVATETAGS))
+				resource_cachemodel=sonador_cachedb.CacheStudy, dcm_privatetags=CONF_DICOM_PRIVATETAGS, dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 		orthanc.RegisterRestCallback(
 			r'/cache/series/([0-9a-fA-F]{8}\-?){5}/index', 
 			sonador_cache.CacheIndexResourceView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession,
-				resource_cachemodel=sonador_cachedb.CacheSeries, dcm_privatetags=CONF_DICOM_PRIVATETAGS))
+				resource_cachemodel=sonador_cachedb.CacheSeries, dcm_privatetags=CONF_DICOM_PRIVATETAGS, dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 
 		# Reconstruct and index patients, studies, and series (replaces default reconstruct endpoint)
 		orthanc.LogWarning('Register reconstruct/index endpoints for patient, study, and series')
 		orthanc.RegisterRestCallback(
 			r'/patients/([0-9a-fA-F]{8}\-?){5}/reconstruct',
 			sonador_cache.CacheReconstructResourceView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession,
-				resource_cachemodel=sonador_cachedb.CachePatient, dcm_privatetags=CONF_DICOM_PRIVATETAGS))
+				resource_cachemodel=sonador_cachedb.CachePatient, dcm_privatetags=CONF_DICOM_PRIVATETAGS, dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 		orthanc.RegisterRestCallback(
 			r'/studies/([0-9a-fA-F]{8}\-?){5}/reconstruct',
 			sonador_cache.CacheReconstructResourceView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession,
-				resource_cachemodel=sonador_cachedb.CacheStudy, dcm_privatetags=CONF_DICOM_PRIVATETAGS))
+				resource_cachemodel=sonador_cachedb.CacheStudy, dcm_privatetags=CONF_DICOM_PRIVATETAGS, dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 		orthanc.RegisterRestCallback(
 			r'/series/([0-9a-fA-F]{8}\-?){5}/reconstruct',
 			sonador_cache.CacheReconstructResourceView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession,
-				resource_cachemodel=sonador_cachedb.CacheSeries, dcm_privatetags=CONF_DICOM_PRIVATETAGS))
+				resource_cachemodel=sonador_cachedb.CacheSeries, dcm_privatetags=CONF_DICOM_PRIVATETAGS, dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 
 
 		# Cache indexing tasks
@@ -439,17 +475,20 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 			orthanc.ChangeType.NEW_PATIENT, 
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=False,
-				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_PATIENT, [])))
+				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_PATIENT, []),
+				dcm_datetags=tuple(filter(lambda dmeta: dmeta.resource == IMAGING_SERVER_RESOURCE_PATIENT, CONF_DICOM_DATETIME_TAGS['Tags'].values()))))
 		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			orthanc.ChangeType.STABLE_PATIENT,
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=True,
-				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_PATIENT, [])))
+				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_PATIENT, []),
+				dcm_datetags=tuple(filter(lambda dmeta: dmeta.resource == IMAGING_SERVER_RESOURCE_PATIENT, CONF_DICOM_DATETIME_TAGS['Tags'].values()))))
 		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			SONADOR_RESOURCE_UPDATE_PATIENT,
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=True,
-				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_PATIENT, [])))
+				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_PATIENT, []),
+				dcm_datetags=tuple(filter(lambda dmeta: dmeta.resource == IMAGING_SERVER_RESOURCE_PATIENT, CONF_DICOM_DATETIME_TAGS['Tags'].values()))))
 		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			SONADOR_RESOURCE_DELETE_PATIENT,
 			sonador_cache_maintenance.remove_cache_serverchange_callback(
@@ -459,17 +498,20 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 			orthanc.ChangeType.NEW_STUDY, 
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=False,
-				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_STUDY, [])))
+				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_STUDY, []),
+				dcm_datetags=tuple(filter(lambda dmeta: dmeta.resource == IMAGING_SERVER_RESOURCE_STUDY, CONF_DICOM_DATETIME_TAGS['Tags'].values()))))
 		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			orthanc.ChangeType.STABLE_STUDY,
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=True,
-				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_STUDY, [])))
+				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_STUDY, []),
+				dcm_datetags=tuple(filter(lambda dmeta: dmeta.resource == IMAGING_SERVER_RESOURCE_STUDY, CONF_DICOM_DATETIME_TAGS['Tags'].values()))))
 		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			SONADOR_RESOURCE_UPDATE_STUDY,
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=True,
-				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_STUDY, [])))
+				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_STUDY, []),
+				dcm_datetags=tuple(filter(lambda dmeta: dmeta.resource == IMAGING_SERVER_RESOURCE_STUDY, CONF_DICOM_DATETIME_TAGS['Tags'].values()))))
 		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			SONADOR_RESOURCE_DELETE_STUDY,
 			sonador_cache_maintenance.remove_cache_serverchange_callback(
@@ -479,17 +521,20 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 			orthanc.ChangeType.NEW_SERIES, 
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=False,
-				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_SERIES, [])))
+				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_SERIES, []),
+				dcm_datetags=tuple(filter(lambda dmeta: dmeta.resource == IMAGING_SERVER_RESOURCE_SERIES, CONF_DICOM_DATETIME_TAGS['Tags'].values()))))
 		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			orthanc.ChangeType.STABLE_SERIES,
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=True,
-				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_SERIES, [])))
+				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_SERIES, []),
+				dcm_datetags=tuple(filter(lambda dmeta: dmeta.resource == IMAGING_SERVER_RESOURCE_SERIES, CONF_DICOM_DATETIME_TAGS['Tags'].values()))))
 		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			SONADOR_RESOURCE_UPDATE_SERIES,
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=True,
-				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_SERIES, [])))
+				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_SERIES, []),
+				dcm_datetags=tuple(filter(lambda dmeta: dmeta.resource == IMAGING_SERVER_RESOURCE_SERIES, CONF_DICOM_DATETIME_TAGS['Tags'].values()))))
 		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 			SONADOR_RESOURCE_DELETE_SERIES,
 			sonador_cache_maintenance.remove_cache_serverchange_callback(
@@ -503,7 +548,7 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 	def orthanc_worklist_onstart(changeType, level, resource):
 		'''	Initialize Orthanc worklist models, endpoints, and scheduled tasks
 		'''
-		from sonador_orthanc.web.worklist import ProcedureStepManagementView
+		from sonador_orthanc.worklist.web import ProcedureStepManagementView
 
 		logger.critical('Enable worklist management view')
 

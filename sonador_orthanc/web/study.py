@@ -1,9 +1,10 @@
-import posixpath, pydicom, logging, json, copy, datetime
+import posixpath, pydicom, logging, json, copy, datetime, traceback
 import orthanc
 
 from sqlalchemy.orm import joinedload
 from sqlalchemy import or_, and_
 
+import client.apisettings as gcapicodes
 from client.errors import ConfigurationError
 from client.utils.object import omit, pick
 
@@ -16,9 +17,8 @@ from sonador.serialization import dcm_str2date, SonadorJsonEncoder
 from sonador_orthanc_common.servers import ResponseLikeObject, local_orthanc_apiurl
 
 from ..apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, ORTHANC_CONFIG_SECTION_POSTGRES, \
-	ORTHANC_CONFIG_SECTION_EXTRADICOMTAGS, ORTHANC_MAINDICOM_TAGS_DEFAULT
+	ORTHANC_CONFIG_SECTION_EXTRADICOMTAGS, ORTHANC_MAINDICOM_TAGS_DEFAULT, SONADOR_CACHE_ORDER_BY
 from ..db.cache import CachePatient, CacheStudy, CacheSeries
-from ..db.dcmext import CacheSeriesPrivateTags
 from ..db.helpers import cache_orthanc_studyjson
 from ..dcmquery import CacheStudyQueryMixin
 
@@ -63,6 +63,7 @@ class CacheStudyQueryView(CacheStudyListBaseView):
 		self.study_modalities = self.query.get(DCMHEADER_MODALITIES_IN_STUDY)
 		self.study_date_filter = self.query.get(DCMHEADER_STUDY_DATE)
 		self.series_date_filter = self.query.get(DCMHEADER_SERIES_DATE)
+		self.order_by = self.POST.get(SONADOR_CACHE_ORDER_BY)
 
 	def orthanc_studyjson(self, cstudy):
 		'''	Create Orthanc JSON response for the provided cached study
@@ -72,16 +73,33 @@ class CacheStudyQueryView(CacheStudyListBaseView):
 	def post(self, output, uri, request):
 		'''	Return list of studies which match the request parameters
 		'''		
-		with self.sessionmaker() as session:
+		try:
+			with self.sessionmaker() as session:
 
-			# Retrieve Orthanc studies
-			orthanc_studies = self.get_studylist(session)
+				# Retrieve Orthanc studies
+				orthanc_studies = self.get_studylist(session)
 
-			# Serialize results to JSON
-			return self.send_response(json.dumps(
-				[self.orthanc_studyjson(cs) for cs in self.paginate_query_results(
-					orthanc_studies, self.offset or 0, self.limit)], 
-				cls=SonadorJsonEncoder))
+				# Serialize results to JSON
+				return self.send_response(json.dumps(
+					[self.orthanc_studyjson(cs) for cs in self.paginate_query_results(
+						orthanc_studies, self.offset or 0, self.limit)], 
+					cls=SonadorJsonEncoder))
+
+		except ValueError as err:
+			logger.error(
+				'Unable to execute study search due to an error. Error: "%s"\n%s' % (err, traceback.format_exc()))
+			
+			return self.send_response(json.dumps({
+				gcapicodes.ERROR: '%s' % err, gcapicodes.STATUS: gcapicodes.FAIL,
+			}), status_code=400)
+
+		except Exception as err:
+			emsg = 'Unable to exceute study search due to an error. Error: "%s"'
+			logger.error('%s\n%s' % (emsg, traceback.format_exc()))
+
+			return self.send_response(json.dumps({
+				gcapicodes.ERROR: emsg, gcapicodes.STATUS: gcapicodes.FAIL
+			}), status_code=500)
 
 
 class SonadorStudyResourceView(SonadorResourceBaseView):

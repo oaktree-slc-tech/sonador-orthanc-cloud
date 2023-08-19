@@ -2,9 +2,9 @@
 
 # Client Dependencies and Secure API
 numpy>=1.22.3
-client>=0.2.4
-sonador>=0.3.0-alpha15
-sonador_orthanc_common>=0.1.0-alpha4
+client>=0.2.6-alpha1
+sonador>=0.3.0-alpha18
+sonador_orthanc_common>=0.1.0-alpha6
 
 # Data Streaming
 confluent-kafka==1.5.0

@@ -34,3 +34,8 @@ SONADOR_CACHE_COUNT_SERIES = 'series-count'
 # Private DICOM Tags
 SONADOR_CONF_PRIVATE_DICT = 'Dictionary'
 SONADOR_CONF_PRIVATE_TAGS = 'PrivateMainDicomTags'
+SONADOR_CONF_DATETIME_TAGS = 'DicomExtDatetime'
+
+
+# Query Request Components
+SONADOR_CACHE_ORDER_BY = 'OrderBy'

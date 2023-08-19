@@ -68,6 +68,10 @@ def orthanc_maindicom_tags(orthanc_conf, maindicom_tags_default=ORTHANC_MAINDICO
 	cdicomtags = copy.copy(maindicom_tags_default)
 	dcm_privatetags = dcm_privatetags or {}
 
+	# Create unified list of tags
+	if not cdicomtags.get('Tags'):
+		cdicomtags['Tags'] = set()
+
 	# Extra main DICOM tags defined in configuration
 	for rtype in (IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES):
 		ctagset = cdicomtags.get(rtype, set())
@@ -81,6 +85,7 @@ def orthanc_maindicom_tags(orthanc_conf, maindicom_tags_default=ORTHANC_MAINDICO
 			ctagset.update(ctagset_private)
 		
 		cdicomtags[rtype] = ctagset
+		cdicomtags['Tags'].add(t for t in ctagset)
 
 	return cdicomtags
 
