@@ -72,6 +72,17 @@ class DicomQueryMixin(ABC):
 		'''
 		rdate_start_ts = rdate_stop_ts = None
 
+		# For query values passed as a tuple/list, convert the query value to a single string
+		if isinstance(dcmquery_val, (tuple, list)):
+
+			# Ensure that the list only contains a single value
+			if len(dcmquery_val) > 1:
+				raise ValueError(
+					'Invalid DICOM date: "%s". DICOM dates must be of the form: yyyymmdd. Example: 20210721' % str(dcmquery_val))
+			
+			# Pull value out of the list
+			dcmquery_val = dcmquery_val[0]
+
 		# Parse date range
 		if range_sep in dcmquery_val:
 

@@ -9,7 +9,7 @@ from client.utils.object import omit, pick
 
 from sonador.apisettings import \
 	IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES, \
-	DCMHEADER_MODALITY, DCMHEADER_STUDY_DATE, DCMHEADER_SERIES_DATE, DCMHEADER_SERIES_TIME, \
+	DCMHEADER_PATIENT_BIRTHDATE, DCMHEADER_MODALITY, DCMHEADER_STUDY_DATE, DCMHEADER_SERIES_DATE, DCMHEADER_SERIES_TIME, \
 	DCMHEADER_MODALITIES_IN_STUDY
 from sonador.imaging.helpers.conversion import json2dcmjson
 from sonador.serialization import dcm_str2date, SonadorJsonEncoder
@@ -48,7 +48,7 @@ class CacheSeriesQueryView(CacheSeriesListBaseView):
 		# using a date/time filter.
 		self.query = self.POST.get('Query', {})
 		self.dicom_query = omit(self.query, 
-			(DCMHEADER_STUDY_DATE, DCMHEADER_SERIES_DATE, DCMHEADER_MODALITIES_IN_STUDY))
+			(DCMHEADER_PATIENT_BIRTHDATE, DCMHEADER_STUDY_DATE, DCMHEADER_SERIES_DATE, DCMHEADER_MODALITIES_IN_STUDY))
 
 		super().setup(output, uri, request)
 
@@ -56,6 +56,7 @@ class CacheSeriesQueryView(CacheSeriesListBaseView):
 		self.limit = int(self.POST.get('Limit')) if self.POST.get('Limit') is not None else None
 		self.offset = int(self.POST.get('Since')) if self.POST.get('Since') is not None else None
 		self.study_modalities = self.query.get(DCMHEADER_MODALITIES_IN_STUDY)
+		self.patient_dob_filter = self.query.get(DCMHEADER_PATIENT_BIRTHDATE)	
 		self.study_date_filter = self.query.get(DCMHEADER_STUDY_DATE)
 		self.series_date_filter = self.query.get(DCMHEADER_SERIES_DATE)
 		self.order_by = self.POST.get(SONADOR_CACHE_ORDER_BY)

@@ -19,6 +19,7 @@ class CacheStudyQueryMixin(object):
 	'''	Helper mixin which provides methods for resource queries against the Sonador "Study" cache.
 	'''
 	resource_model = CacheStudy
+	patient_dob_filter = None
 	study_date_filter = None
 	series_date_filter = None
 	study_modalities = None
@@ -223,6 +224,16 @@ class CacheStudyQueryMixin(object):
 		'''
 		# Filter results from cache
 		studylist = self.execute_resource_query(session, *args, **kwargs)
+
+		# Patient DOB
+		if self.patient_dob_filter:
+			pdob_start_ts, pdob_stop_ts = self.parse_dcmdate_queryfilter(self.patient_dob_filter)
+
+			# Apply filters
+			if pdob_start_ts:
+				studylist = studylist.filter(CacheStudy.parent.has(CachePatient.birth_date >= pdob_start_ts))
+			if pdob_stop_ts:
+				studylist = studylist.filter(CacheStudy.parent.has(CachePatient.birth_date <= pdob_stop_ts))
 
 		# Check if a specific modality is contained in the study
 		if self.study_modalities:

@@ -20,6 +20,7 @@ class CacheSeriesQueryMixin(object):
 	'''	Helper mixin which provides methods for resource queries against the Sonador "Series" cache.
 	'''
 	resource_model = CacheSeries
+	patient_dob_filter = None
 	series_date_filter = None
 	study_date_filter = None
 	study_modalities = None
@@ -232,6 +233,18 @@ class CacheSeriesQueryMixin(object):
 					CacheStudy.series_collection.any(or_(*tuple(map(
 						lambda  modality: CacheSeries.orthanc[DCMHEADER_MODALITY].astext == modality,
 						self.parse_multivalue_queryfilter(self.study_modalities)))))))
+
+		# Patient DOB
+		if self.patient_dob_filter:
+			pdob_start_ts, pdob_stop_ts = self.parse_dcmdate_queryfilter(self.patient_dob_filter)
+
+			# Apply filters
+			if pdob_start_ts:
+				studylist = studylist.filter(CacheSeries.parent.has(
+					CacheStudy.parent.has(CachePatient.birth_date >= pdob_start_ts)))
+			if pdob_stop_ts:
+				studylist = studylist.filter(CacheSeries.parent.has(
+					CacheStudy.parent.has(CachePatient.birth_date <= pdob_stop_ts)))
 
 		# SeriesDate: Check if a specific date range is requested.
 		# TODO: Add support for parsing series time values and incorporating those into the request structure.

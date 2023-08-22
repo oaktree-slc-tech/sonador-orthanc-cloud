@@ -21,6 +21,7 @@ class CachePatientQueryMixin(object):
 	'''	Helper mixin which provides methods for resource queries against the Sonador "Patient" cache.
 	'''
 	resource_model = CachePatient
+	patient_dob_filter = None
 	series_date_filter = None
 	study_date_filter = None
 
@@ -229,6 +230,16 @@ class CachePatientQueryMixin(object):
 		# Filter results from cache
 		patientlist = self.execute_resource_query(session, *args, **kwargs)
 
+		# Patient DOB
+		if self.patient_dob_filter:
+			pdob_start_ts, pdob_stop_ts = self.parse_dcmdate_queryfilter(self.patient_dob_filter)
+
+			# Apply filters
+			if pdob_start_ts:
+				patientlist = patientlist.filter(CachePatient.birth_date >= pdob_start_ts)
+			if pdob_stop_ts:
+				patientlist = patientlist.filter(CachePatient.birth_date <= pdob_stop_ts)
+
 		# StudyDate: Look for patients which have studies that fall within a specific range
 		# TODO: Add support for parsiing study time values and incorporating those into the request structure.
 		if self.study_date_filter:
@@ -236,7 +247,7 @@ class CachePatientQueryMixin(object):
 
 			# Apply filters
 			if sdate_start_ts:
-				patientlist = patientlist.filter(CachePatient.studies_collection.any(CacheStudy.ts >= sdate_stop_ts))
+				patientlist = patientlist.filter(CachePatient.studies_collection.any(CacheStudy.ts >= sdate_start_ts))
 			if sdate_stop_ts:
 				patientlist = patientlist.filter(CachePatient.studies_collection.any(CacheStudy.ts <= sdate_stop_ts))
 
