@@ -2,7 +2,7 @@ import copy, re, fnmatch, logging
 
 from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, \
 	IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_IMAGE, \
-	DCMHEADER_MODALITIES_IN_STUDY
+	DCMHEADER_MODALITIES_IN_STUDY, DCM_QUERY_NULL, DCM_QUERY_NOT_NULL
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,10 @@ def dcmquery2psqlregex(dcmquery, regex_transforms=PSQL_REGEX_TRANSFORMS):
 
 		@returns str: PSQL regular expression string
 	'''
+	# Return NULL or NOT NULL unmodified
+	if dcmquery in (DCM_QUERY_NULL, DCM_QUERY_NOT_NULL):
+		return dcmquery
+
 	# Transform DICOM query to Python regular expression
 	psql_pattern = copy.copy(dcmquery)
 	if not isinstance(psql_pattern, (str, bytes)):

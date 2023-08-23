@@ -1,13 +1,14 @@
 import logging, abc, datetime
 from abc import ABC
 from typing import Union, Sequence
+from sqlalchemy import not_
 
 from client.errors import ConfigurationError
 from client.utils.object import omit, pick
 
 from sonador.apisettings import \
 	IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES, \
-	DCM_QUERY_ALLFIELDS
+	DCM_QUERY_ALLFIELDS, DCM_QUERY_NULL, DCM_QUERY_NOT_NULL
 from sonador.serialization import dcm_str2date
 
 from ..db.cache import CachePatient, CacheStudy, CacheSeries, SONADOR_CACHE_MODELS
@@ -131,23 +132,45 @@ class DicomQueryMixin(ABC):
 
 		return queryval
 
+	def _cache_queryfilter(self, cachemodel, tagname, queryfilter, **kwargs):
+		'''	Create a query condition for the provided model, tag, and filter
+		'''
+		# Query for null values
+		if queryfilter == DCM_QUERY_NULL:			
+
+			# Key is present but empty OR key is present but undefined or falsy
+			qc = not_(cachemodel.orthanc.has_key(tagname))
+			qc |= cachemodel.orthanc[tagname] == None
+			qc |= cachemodel.orthanc[tagname].astext == ''
+			qc |= cachemodel.orthanc[tagname] == []
+			return qc
+
+		# Not null query: key is present and has a defined value
+		elif queryfilter == DCM_QUERY_NOT_NULL:
+
+			# Key is present with a valid value
+			qc = cachemodel.orthanc.has_key(tagname)
+			return qc
+
+		return cachemodel.orthanc[tagname].astext.regexp_match(queryfilter, flags=dcmquery_psqlregex_flags(**kwargs))
+
 	def _patient_querycondition(self, patient_tagname, patient_queryfilter, privatetags=False, **kwargs):
 		'''	Create a patient query condition for the provided tag name and filter
 		'''
-		cachemodel = CachePatient.privatetags_resource_model if privatetags else CachePatient
-		return cachemodel.orthanc[patient_tagname].astext.regexp_match(patient_queryfilter, flags=dcmquery_psqlregex_flags(**kwargs))
+		return self._cache_queryfilter(CachePatient.privatetags_resource_model if privatetags else CachePatient,
+			patient_tagname, patient_queryfilter, **kwargs)
 
 	def _study_querycondition(self, study_tagname, study_queryfilter, privatetags=False, **kwargs):
 		'''	Create a study query condition for the provided tag name and filter
 		'''
-		cachemodel = CacheStudy.privatetags_resource_model if privatetags else CacheStudy		
-		return cachemodel.orthanc[study_tagname].astext.regexp_match(study_queryfilter, flags=dcmquery_psqlregex_flags(**kwargs))
+		return self._cache_queryfilter(CacheStudy.privatetags_resource_model if privatetags else CacheStudy,
+			study_tagname, study_queryfilter, **kwargs)
 
 	def _series_querycondition(self, series_tagname, series_queryfilter, privatetags=False, **kwargs):
 		'''	Create a series query condition for the provided tag name and filter
 		'''
-		cachemodel = CacheSeries.privatetags_resource_model if privatetags else CacheSeries
-		return cachemodel.orthanc[series_tagname].astext.regexp_match(series_queryfilter, flags=dcmquery_psqlregex_flags(**kwargs))
+		return self._cache_queryfilter(CacheSeries.privatetags_resource_model if privatetags else CacheSeries,
+			series_tagname, series_queryfilter, **kwargs)
 
 	def _querybuild_or(self, queryfilter, condition_builder, **kwargs):
 		'''	Create an "OR" condition funciton from the provide query filter and condition builder method.
