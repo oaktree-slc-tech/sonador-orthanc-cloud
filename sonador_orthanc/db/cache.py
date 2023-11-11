@@ -1,4 +1,4 @@
-import abc, logging
+import abc, logging, datetime
 from typing import Union, Sequence
 from collections import OrderedDict
 
@@ -37,7 +37,7 @@ class CacheResourceMixin(CacheResourceDbPropertiesMixin):
 	__table_args__ = { 'extend_existing': True }
 
 	@classmethod
-	def _init_cache_instance(cls, session, rinstance):
+	def _init_cache_instance(cls, session, rinstance, mtime=None):
 		'''	Initialize (or retrieve) the cached version of the resource
 
 			@input session: SQLAlchemy database session
@@ -47,12 +47,18 @@ class CacheResourceMixin(CacheResourceDbPropertiesMixin):
 			@returns cache resource model instance
 		'''
 		ci = session.query(cls).filter_by(uid=rinstance.pk).first()
+
+		# Initialize new instance, set the modified time to the instance lastupdate timestamp
 		if not ci:
 			ci = cls(uid=rinstance.pk)
+			mtime = rinstance.lastupdate
+
+		# Update existing instance, set modified time to the current server's time
+		else: mtime = datetime.datetime.now()
 
 		# Copy Orthanc DICOM properties to cache instance
 		ci.orthanc = rinstance.dicomdata
-		ci.mtime = rinstance.lastupdate
+		ci.mtime = mtime
 		return ci
 
 	@classmethod
@@ -68,15 +74,21 @@ class CacheResourceMixin(CacheResourceDbPropertiesMixin):
 			@returns instance of privatetags_resource_model
 		'''
 		pci = session.query(privatetags_resource_model).filter_by(uid=rinstance.pk).first()
+
+		# Initialize new instance, set the modified time to the instance lastupdate timestamp
 		if not pci:
 			pci = privatetags_resource_model(uid=rinstance.pk)
+			mtime = rinstance.lastupdate
+
+		# Update existing instance, set the modified time to the current server's time
+		else: mtime = datetime.datetime.now()
 
 		# Copy Orthanc DICOM private tags to cache instance
 		dtags = cls._get_dcmtags(rinstance)
 
 		pci.orthanc = pick(dtags, dcm_privatetags)
 		pci.stable = rinstance.stable
-		pci.mtime = rinstance.lastupdate
+		pci.mtime = mtime
 		logger.debug('Private Tags: resource=%s\n%s' % (pci.uid, pci.orthanc))
 		return pci
 
@@ -352,6 +364,8 @@ class CacheSeries(CacheResourceMixin, DbBase):
 		primaryjoin='CacheSeries.uid == foreign(CacheSeriesPrivateTags.uid)', viewonly=True, uselist=False)
 	timestamp_tags = relationship('CacheSeriesDatetime', overlaps='series,timestamp_tags', back_populates='series',
 		primaryjoin='CacheSeries.uid == foreign(CacheSeriesDatetime.uid)', viewonly=True)
+	comments = relationship('ImagingSeriesComment', overlaps='series,comments', back_populates='series',
+		primaryjoin='CacheSeries.uid == foreign(ImagingSeriesComment.series_id)', viewonly=True)
 
 	@classproperty
 	def type(cls):
@@ -373,6 +387,11 @@ class CacheSeries(CacheResourceMixin, DbBase):
 		'''
 		from .dcmext import CacheSeriesDatetime
 		return CacheSeriesDatetime
+
+	@classproperty
+	def comment_model(cls):
+		from .comments import ImagingSeriesComment
+		return ImagingSeriesComment
 
 	@classmethod
 	def _get_dcmtags(cls, instance, dcm_idx=0):

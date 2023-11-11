@@ -2,7 +2,9 @@ import copy, re, fnmatch, logging
 
 from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, \
 	IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_IMAGE, \
-	DCMHEADER_MODALITIES_IN_STUDY, DCM_QUERY_NULL, DCM_QUERY_NOT_NULL
+	DCMHEADER_MODALITIES_IN_STUDY, DCM_QUERY_NULL, DCM_QUERY_NOT_NULL, \
+	IMAGING_SERVER_MAINDICOM, IMAGING_SERVER_PATIENT_MAINDICOM, IMAGING_SERVER_LAST_UPDATE, IMAGING_SERVER_STABLE, \
+	IMAGING_SERVER_PARENT_PATIENT, IMAGING_SERVER_PARENT_STUDY
 
 logger = logging.getLogger(__name__)
 
@@ -65,13 +67,13 @@ def cache_orthanc_patientjson(cpatient, resource_type=None):
 		dcmtags_main.update(cpatient.privatetags.orthanc)
 	else: dcmtags_main = cpatient.orthanc
 
-	dcm = { 'ID': cpatient.uid, 'MainDicomTags': dcmtags_main, 'Type': resource_type or cpatient.type }
+	dcm = { 'ID': cpatient.uid, IMAGING_SERVER_MAINDICOM: dcmtags_main, 'Type': resource_type or cpatient.type }
 	if cpatient.studies:
 		dcm['Studies'] = cpatient.studies
 	if cpatient.stable is not None:
-		dcm['IsStable'] = cpatient.stable
+		dcm[IMAGING_SERVER_STABLE] = cpatient.stable
 	if cpatient.mtime:
-		dcm['LastUpdate'] = cpatient.mtime
+		dcm[IMAGING_SERVER_LAST_UPDATE] = cpatient.mtime
 
 	return dcm
 
@@ -84,20 +86,20 @@ def cache_orthanc_studyjson(cstudy, resource_type=None):
 		dcmtags_main.update(cstudy.privatetags.orthanc)
 	else: dcmtags_main = cstudy.orthanc
 
-	dcm = { 'ID': cstudy.uid, 'MainDicomTags': dcmtags_main, 'Type': resource_type or cstudy.type }
+	dcm = { 'ID': cstudy.uid, IMAGING_SERVER_MAINDICOM: dcmtags_main, 'Type': resource_type or cstudy.type }
 	if cstudy.parent:
-		dcm['ParentPatient'] = cstudy.parent_id
-		dcm['PatientMainDicomTags'] = cstudy.parent.orthanc
+		dcm[IMAGING_SERVER_PARENT_PATIENT] = cstudy.parent_id
+		dcm[IMAGING_SERVER_PATIENT_MAINDICOM] = cstudy.parent.orthanc
 	if cstudy.series:
-		dcm['Series'] = cstudy.series
+		dcm[IMAGING_SERVER_RESOURCE_SERIES] = cstudy.series
 	if cstudy.stable is not None:
-		dcm['IsStable'] = cstudy.stable
+		dcm[IMAGING_SERVER_STABLE] = cstudy.stable
 	if cstudy.mtime:
-		dcm['LastUpdate'] = cstudy.mtime
+		dcm[IMAGING_SERVER_LAST_UPDATE] = cstudy.mtime
 
 	# Check MainDicomTags to see if modalities in study has been populated
-	if not dcm['MainDicomTags'].get(DCMHEADER_MODALITIES_IN_STUDY) and cstudy.modalities:
-		dcm['MainDicomTags'][DCMHEADER_MODALITIES_IN_STUDY] = cstudy.modalities
+	if not dcm[IMAGING_SERVER_MAINDICOM].get(DCMHEADER_MODALITIES_IN_STUDY) and cstudy.modalities:
+		dcm[IMAGING_SERVER_MAINDICOM][DCMHEADER_MODALITIES_IN_STUDY] = cstudy.modalities
 
 	return dcm
 
@@ -110,14 +112,26 @@ def cache_orthanc_seriesjson(cseries, resource_type=None):
 		dcmtags_main.update(cseries.privatetags.orthanc)
 	else: dcmtags_main = cseries.orthanc
 
-	dcm = { 'ID': cseries.uid, 'MainDicomTags': dcmtags_main, 'Type': resource_type or cseries.type }
+	dcm = { 'ID': cseries.uid, IMAGING_SERVER_MAINDICOM: dcmtags_main, 'Type': resource_type or cseries.type }
 	if cseries.parent_id:
-		dcm['ParentStudy'] = cseries.parent_id
+		dcm[IMAGING_SERVER_PARENT_STUDY] = cseries.parent_id
 	if cseries.instances:
 		dcm['Instances'] = cseries.instances
 	if cseries.stable is not None:
-		dcm['IsStable'] = cseries.stable
+		dcm[IMAGING_SERVER_STABLE] = cseries.stable
 	if cseries.mtime:
-		dcm['LastUpdate'] = cseries.mtime
+		dcm[IMAGING_SERVER_LAST_UPDATE] = cseries.mtime
 
 	return dcm
+
+
+def orthanc_commentjson(comment):
+	'''	Create Orthanc JSONn structure for the provided comment.
+	'''
+	return {
+		'ID': comment.uid,
+		IMAGING_SERVER_RESOURCE_SERIES: comment.series_id,
+		'Created': comment.ctime,
+		IMAGING_SERVER_LAST_UPDATE: comment.mtime,
+		'Text': comment.text,
+	}

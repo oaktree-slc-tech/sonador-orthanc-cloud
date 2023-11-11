@@ -2,12 +2,11 @@
 
 # Client Dependencies and Secure API
 numpy>=1.22.3
-client>=0.2.6
-sonador>=0.3.0-alpha20
-sonador_orthanc_common>=0.1.0
+sonador>=0.3.0-alpha29
+sonador-orthanc-common>=0.2-alpha3
 
 # Data Streaming
-confluent-kafka==1.5.0
+confluent-kafka>=2.3.0
 
 # Database Cache
 psycopg2-binary==2.9.3
