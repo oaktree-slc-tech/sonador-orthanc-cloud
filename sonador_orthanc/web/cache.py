@@ -25,6 +25,7 @@ from ..db.base import DbBase
 from ..db.cache import CacheSeries, CacheStudy, CachePatient
 from ..db.internal import Resource, \
     ORTHANCDB_PATIENT_TYPE, ORTHANCDB_STUDY_TYPE, ORTHANCDB_SERIES_TYPE
+from ..db.comments import ImagingSeriesComment
 
 from ..tasks.maintenance import cache_bulk_index_patients, cache_bulk_index_studies, cache_bulk_index_series, \
 	cache_index_patient, cache_index_study, cache_index_series
@@ -87,7 +88,7 @@ class ResourceBaseMixin(object):
 		'''
 		if not self.resource_model:
 			raise ConfigurationError(
-				'Unable to initialize %s view instance: invalid reseource model' % type(self).__name__)
+				'Unable to initialize %s view instance: invalid resource model' % type(self).__name__)
 		
 		self.resource_type = kwargs.get('resource_type')
 		self.resource_code = kwargs.get('resource_code')
@@ -109,10 +110,10 @@ class ResourceBaseMixin(object):
 		ruid_match = self.resource_uid_regex.match(self.uri)
 		return ruid_match.groupdict().get('uid') if ruid_match else None
 
-	def get_resource(self, session, *args, **kwargs):
+	def get_resource(self, session, ruid=None, *args, **kwargs):
 		'''	Retrieve resource instance
 		'''
-		ruid = self.get_resource_uid(*args, **kwargs)
+		ruid = ruid or self.get_resource_uid(*args, **kwargs)
 		r = session.query(self.resource_model).filter_by(resourcetype=self.resource_code, publicid=ruid).first()
 		if not r:
 			raise ResourceDoesNotExist(
@@ -578,6 +579,8 @@ class AdminRebuildCacheView(CacheBulkIndexBaseView):
 			response[gcapicodes.OPERATIONS].append({
 				gcapicodes.OPCODE: 'table-create', gcapicodes.STATUS: gcapicodes.SUCCESS,
 			})
+
+			# Truncate all the private tables and extended DICOM tables
 
 			# Query new tables to ensure that they were re-initialized (and are empty)
 			with self.sessionmaker() as session:

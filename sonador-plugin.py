@@ -11,6 +11,8 @@ from sonador.apisettings import DicomDatetimePairKey, \
 	IMAGING_SERVER_RESOURCE_SUPPORTED, DCMHEADER_SERIES_INSTANCE_UID, DCMHEADER_STUDY_ID, DCMHEADER_PATIENT_ID
 from sonador.servers import SonadorServer, SonadorImagingServer
 
+from sonador_orthanc_common.apisettings import ORTHANC_CONFIG_SECTION_DICT
+
 from sonador_orthanc.apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, \
 	ORTHANC_CONFIG_SECTION_POSTGRES, ORTHANC_CONFIG_SECTION_SONADOR, \
 	ORTHANC_SERVER_ID as KTAG_ORTHANC_SERVER_ID, \
@@ -20,7 +22,7 @@ from sonador_orthanc.apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, \
 	ORTHANC_DEFAULT_ENCODING, \
 	SONADOR_RESOURCE_UPDATE_PATIENT, SONADOR_RESOURCE_UPDATE_STUDY, SONADOR_RESOURCE_UPDATE_SERIES, \
 	SONADOR_RESOURCE_DELETE_PATIENT, SONADOR_RESOURCE_DELETE_STUDY, SONADOR_RESOURCE_DELETE_SERIES, \
-	SONADOR_CONF_PRIVATE_DICT, SONADOR_CONF_PRIVATE_TAGS, SONADOR_CONF_DATETIME_TAGS
+	SONADOR_CONF_PRIVATE_TAGS, SONADOR_CONF_DATETIME_TAGS
 from sonador_orthanc.helpers import init_sonador_server
 from sonador_orthanc.manager import SonadorServerManager, \
 	TIMER_30S, TIMER_MINUTE, TIMER_10MIN, TIMER_30MIN, TIMER_HOUR, TIMER_DAILY
@@ -43,6 +45,11 @@ CONF_SONADOR = CONF.get(ORTHANC_CONFIG_SECTION_SONADOR, {})
 CONF_POSTGRESQL = CONF.get(ORTHANC_CONFIG_SECTION_POSTGRES, {})
 CONF_DICOMWEB = CONF.get(ORTHANC_CONFIG_SECTION_DICOMWEB, {})
 
+# Private DICOM Tags
+CONF_DICOM_PRIVATEDICT = CONF.get(ORTHANC_CONFIG_SECTION_DICT, {})
+CONF_DICOM_PRIVATEDICT['Tags'] = set(t[1] for t in CONF_DICOM_PRIVATEDICT.values())
+CONF_DICOM_PRIVATETAGS = CONF.get(SONADOR_CONF_PRIVATE_TAGS, {})
+
 
 # Initialize Sonador API client and check that all required authentication
 # components are present (Sonador API clients should authenticate with API tokens)
@@ -50,7 +57,8 @@ if not CONF_SONADOR:
 	raise ValueError('Invalid configuration, unable to locate Sonador section of configuration')
 
 SONADOR_SERVER, ORTHANC_SONADOR_SERVERID = init_sonador_server(CONF_SONADOR)
-ORTHANC_SONADOR_MANAGER = SonadorServerManager(SONADOR_SERVER, ORTHANC_SONADOR_SERVERID, conf=CONF_SONADOR)
+ORTHANC_SONADOR_MANAGER = SonadorServerManager(SONADOR_SERVER, ORTHANC_SONADOR_SERVERID, 
+	conf=CONF_SONADOR, private_tags_dict=CONF_DICOM_PRIVATEDICT)
 
 # Register/update Orthanc configuration with Sonador
 ORTHANC_SONADOR_MANAGER.register_server()
@@ -311,10 +319,7 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 		import sonador_orthanc.tasks.maintenance.cache as sonador_cache_maintenance
 		import sonador_orthanc.db.cache as sonador_cachedb
 
-		# Private DICOM Tags
-		CONF_DICOM_PRIVATEDICT = CONF.get(SONADOR_CONF_PRIVATE_DICT, {})
-		CONF_DICOM_PRIVATEDICT['Tags'] = set(t[1] for t in CONF_DICOM_PRIVATEDICT.values())
-		CONF_DICOM_PRIVATETAGS = CONF.get(SONADOR_CONF_PRIVATE_TAGS, {})
+		# DICOM Extension Tags
 		CONF_DICOM_DATETIME_TAGS = CONF.get(SONADOR_CONF_DATETIME_TAGS, {})
 		CONF_DICOM_DATETIME_TAGS['Tags'] = {}
 
@@ -376,6 +381,7 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 		from sonador_orthanc.web.patient import CachePatientQueryView, SonadorPatientResourceView
 		from sonador_orthanc.web.study import CacheStudyQueryView, SonadorStudyResourceView
 		from sonador_orthanc.web.series import CacheSeriesQueryView, SonadorSeriesResourceView
+		from sonador_orthanc.web.comments import CommentSeriesManagementView, CommentSeriesRestView
 		
 		orthanc.RegisterRestCallback('/cache/patients', CachePatientQueryView.as_view(
 			sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS, dcm_privatetags=CONF_DICOM_PRIVATETAGS,
@@ -394,6 +400,12 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 			SonadorStudyResourceView.as_view(sessionmaker=OrthancSession))
 		orthanc.RegisterRestCallback(r'/series/([0-9a-fA-F]{8}\-?){5}',
 			SonadorSeriesResourceView.as_view(sessionmaker=OrthancSession))
+		
+		# Callback for comments and individual comment
+		orthanc.RegisterRestCallback(r'/series/([0-9a-fA-F]{8}\-?){5}/comments',
+			CommentSeriesManagementView.as_view(sessionmaker=OrthancSession))
+		orthanc.RegisterRestCallback(r'/series/([0-9a-fA-F]{8}\-?){5}/comments/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
+			CommentSeriesRestView.as_view(sessionmaker=OrthancSession))
 
 		# Cache C-FIND handlers
 		from sonador_orthanc.tasks.find import DicomCacheCFindCallback
@@ -563,14 +575,17 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 	def orthanc_sysinfo_onstart(changeType, level, resource):
 		'''	Initialize Orthanc system info and status endpoints
 		'''
-		from sonador_orthanc.web.system import SonadorOrthancSystemReportView, SonadorOrthancSystemStatusView
+		from sonador_orthanc.web.system import SonadorOrthancSystemReportView, SonadorOrthancSystemStatusView, \
+			SonadorOrthancDicomTagsView
 
 		logger.critical('Enable Sonador/Orthanc system views')
 
 		orthanc.RegisterRestCallback(
 			'/system', SonadorOrthancSystemReportView.as_view(orthanc_conf=CONF, servermanager=ORTHANC_SONADOR_MANAGER))
-		orthanc.RegisterRestCallback(
-			'/system/status', SonadorOrthancSystemStatusView.as_view(servermanager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
+		orthanc.RegisterRestCallback('/system/status', SonadorOrthancSystemStatusView.as_view(
+				servermanager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
+		orthanc.RegisterRestCallback('/cache/dcm-tags', SonadorOrthancDicomTagsView.as_view(
+			servermanager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
 
 
 	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(

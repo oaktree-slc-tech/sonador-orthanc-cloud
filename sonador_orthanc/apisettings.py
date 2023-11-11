@@ -2,7 +2,7 @@ from sonador_orthanc_common.apisettings import *
 
 
 # Sonador/Orthanc Plugin Version
-VERSION = '0.3-alpha9'
+VERSION = '0.3-alpha11'
 
 # Sonador Cache Index Status Codes
 SONADOR_CACHE_STATUS_CURRENT = 'current'
@@ -32,7 +32,6 @@ SONADOR_CACHE_COUNT_SERIES = 'series-count'
 
 
 # Private DICOM Tags
-SONADOR_CONF_PRIVATE_DICT = 'Dictionary'
 SONADOR_CONF_PRIVATE_TAGS = 'PrivateMainDicomTags'
 SONADOR_CONF_DATETIME_TAGS = 'DicomExtDatetime'
 

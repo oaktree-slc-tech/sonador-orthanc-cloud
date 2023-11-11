@@ -1,18 +1,25 @@
 '''	Web views which provide details about the Orthanc instance, active plugins, and configuration.
 '''
 import json, orthanc, logging, datetime
+from collections import OrderedDict
+
+from pydicom.datadict import dictionary_keyword, dictionary_VR
 
 import client.apisettings as gcapicodes
 from client.apisettings import AUTH
 from client.errors import ConfigurationError
 
+from sonador.apisettings import DICOM_VR_DESCRIPTION, DCM_MODALITIES, DCMHEADER_MODALITY
+from sonador.serialization import SonadorJsonEncoder
+from sonador.helpers import dcm_tag2label
+
 from sonador_orthanc_common.apisettings import ORTHANC_SONADOR_CONFIG_URL, ORTHANC_SONADOR_VERSION, \
 	ORTHANC_CONFIG_HTTP_SERVER_SECURE, ORTHANC_CONFIG_ORTHANC_DATABASE, ORTHANC_CONFIG_ACTIVE_PLUGINS, \
 	ORTHANC_CONNECTION_STATE, ORTHANC_CONNECTION_STATE_CONNECTED, ORTHANC_CONNECTION_STATE_OFFLINE, \
-	ORTHANC_SONADOR_CONNECTION
-from sonador.serialization import SonadorJsonEncoder
+	ORTHANC_SONADOR_CONNECTION, ORTHANC_CONFIG_SECTION_DICT
 
-from ..apisettings import VERSION, SONADOR_CACHE_COUNT_PATIENT, SONADOR_CACHE_COUNT_STUDY, SONADOR_CACHE_COUNT_SERIES
+from ..apisettings import VERSION, SONADOR_CACHE_COUNT_PATIENT, SONADOR_CACHE_COUNT_STUDY, SONADOR_CACHE_COUNT_SERIES, \
+	SONADOR_CONF_PRIVATE_TAGS, SONADOR_CONF_DATETIME_TAGS, SONADOR_CONF_PRIVATE_TAGS
 from ..db.cache import CacheSeries, CacheStudy, CachePatient
 
 from .base import OrthancBaseView
@@ -51,6 +58,17 @@ class SonadorOrthancSystemReportView(OrthancBaseView):
 		# Sonador/Orthanc Version
 		sys_info[ORTHANC_SONADOR_CONFIG_URL] = self.servermanager.server.url
 		sys_info[ORTHANC_SONADOR_VERSION] = VERSION
+
+		# Add private main DICOM tags to response		
+		if self.orthanc_conf.get(SONADOR_CONF_PRIVATE_TAGS, {}):
+			sys_info[SONADOR_CONF_PRIVATE_TAGS] = OrderedDict()
+
+			def _private_hexcode(private_header, sep=','):
+				_ptagdef = self.servermanager.tags.tag2def(private_header)
+				return sep.join(_ptagdef.hex) if _ptagdef else None
+
+			for rtype, dcm_tags in self.orthanc_conf.get(SONADOR_CONF_PRIVATE_TAGS, {}).items():
+				sys_info[SONADOR_CONF_PRIVATE_TAGS][rtype] = ';'.join([pt for pt in map(_private_hexcode, dcm_tags) if pt])
 
 		return self.send_response(json.dumps(sys_info, cls=SonadorJsonEncoder))
 
@@ -124,3 +142,105 @@ class SonadorOrthancSystemStatusView(OrthancBaseView):
 		else: status_code = 500
 
 		return self.send_response(json.dumps(response, cls=SonadorJsonEncoder), status_code=status_code)
+
+
+DCMTAG_OPTIONS = {
+	DCMHEADER_MODALITY: DCM_MODALITIES,
+}
+
+
+class SonadorOrthancDicomTagsView(OrthancBaseView):
+	'''	Retrieve the list of DICOM tags and value representations currently configured for the Orthanc server.
+		Tag data is split by the resource type (Patient, Study, Series, Instance) and keyed to the DICOM hexadecimal code.
+
+		Response components:
+		*	Resource level: `Patient`, `Study`, `Series`, `Instance`
+		*	Resource components:
+			-	code (key): DICOM hexadecimal code for the resource
+			-	resource:
+				+	tag: short name of the DICOM tag
+				+	name: long name of the tag
+				+	vr: value representation of the resource
+					@	code: DICOM VR code (example: LO)
+					@	description: description of the value representation (example: "Long String")
+
+		Sample response:
+
+		```json
+		{
+		  Patient: {
+		    '0010,0020': {
+		      'tag': 'PatientID',
+		      'name': 'Patient ID',
+		      'vr': {
+		        'code': 'LO',
+		        'description': 'Long String',
+		      }
+		    }
+		  },
+		  Study: {
+		    ...
+		  },
+		  Series: {
+		    ...
+		  },
+		  Instance: {
+		    ...
+		  }
+		}
+
+		```
+	'''
+	servermanager = None
+	sessionmaker = None
+
+	def setup(self, output, uri, request, *args, **kwargs):
+		super().setup(output, uri, request)
+
+		if not self.servermanager:
+			raise ConfigurationError('Unable to initialize status view, invalid Orther server manager.')
+		if not self.sessionmaker:
+			raise ConfigurationError('Unable to initialize status view, invalid session maker instance.')
+
+	def dcm_tagdata(self, dcmtag, sep=','):
+		'''	Retrieve data for the provided tag
+		'''
+		_tag = self.servermanager.tags.code2def(dcmtag)
+
+		
+		# Tag details
+		_tagdef =  {
+			'code': ','.join(_tag.hex), 'tag': _tag.header, 'label': dcm_tag2label(_tag.header), 
+			'private': _tag.private, 'vr': { 'code':  _tag.dtype },
+		}
+
+		# Add VR type
+		if DICOM_VR_DESCRIPTION.get(_tag.dtype):
+			_tagdef['vr']['name'] = DICOM_VR_DESCRIPTION.get(_tag.dtype).name
+
+		# Add options
+		if DCMTAG_OPTIONS.get(_tag.header):
+			_tagdef['options'] = DCMTAG_OPTIONS.get(_tag.header)
+
+		return _tagdef
+
+	def get(self, output, uri, request, *args, **kwargs):
+		'''	Retrieve system configuration and create VR map of available tags.
+		'''
+		# Retrieve tags configuredin the main DICOM tags cache
+		sconfig = self.servermanager.get_internal_imageserver().system_info()
+		dcmtags = sconfig.get('MainDicomTags', {})
+
+		for rtype,rtags in dcmtags.items():
+			dcmtags[rtype] = dict((dcmtag, self.dcm_tagdata(dcmtag)) for dcmtag in rtags.split(';'))
+
+		private_dcmtags = sconfig.get(SONADOR_CONF_PRIVATE_TAGS, {})
+		for rtype, rtags in private_dcmtags.items():
+			for dcmcode in rtags.split(';'):
+
+				# Retrieve tag definition and add to the response
+				_ptagdef = self.dcm_tagdata(dcmcode)
+				if _ptagdef:
+					dcmtags[rtype][dcmcode]	= _ptagdef
+
+		return self.send_response(json.dumps(dcmtags, cls=SonadorJsonEncoder))

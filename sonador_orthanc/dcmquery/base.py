@@ -8,8 +8,9 @@ from client.utils.object import omit, pick
 
 from sonador.apisettings import \
 	IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES, \
-	DCM_QUERY_ALLFIELDS, DCM_QUERY_NULL, DCM_QUERY_NOT_NULL
-from sonador.serialization import dcm_str2date
+	DCM_QUERY_ALLFIELDS, DCM_QUERY_NULL, DCM_QUERY_NOT_NULL, \
+	IMAGING_SERVER_LAST_UPDATE, IMAGING_SERVER_MODIFIED
+from sonador.serialization import dcm_str2date, dcm_str2datetime
 
 from ..db.cache import CachePatient, CacheStudy, CacheSeries, SONADOR_CACHE_MODELS
 from ..db.helpers import dcmquery2psqlregex, dcmquery_psqlregex_flags
@@ -27,6 +28,8 @@ class DicomQueryMixin(ABC):
 	dcm_privatetags = None
 	dcm_datetags = None
 	dicom_query = None
+	resource_mtime_query = None
+	datetime_query_timedelta = datetime.timedelta(minutes=30)
 	order_by = None
 
 	def _init_dcmquery(self, *args, **kwargs):
@@ -68,33 +71,50 @@ class DicomQueryMixin(ABC):
 		'''
 		return dcmquery2psqlregex(dcmquery_val)
 
-	def parse_dcmdate_queryfilter(self, dcmquery_val: str, range_sep='-'):
-		'''	Parse the provide DICOM query value to a start/end time for querying the resource cache
+	def _clean_dcmdatestr(self, dcm_queryval, range_sep='-'):
+		'''	Verify and clean (split and truncate) the provided query string into start/end components.
+		'''
+		rdate_startstr = rdate_stopstr = None
+
+		# Split date string to start/end
+		if range_sep in dcm_queryval:
+
+			# Parse start and stop components
+			rdate_components = dcm_queryval.split(range_sep)
+			if not len(rdate_components) == 2:
+				raise ValueError('Unable to parse DICOM date filter. Invalid range: %s'  % dcmquery_val)
+
+			rdate_startstr, rdate_stopstr = rdate_components[0] if rdate_components[0] else None, rdate_components[1] if rdate_components[1] else None
+
+		# Single value query, set "start" string only
+		else: rdate_startstr = dcm_queryval
+
+		return rdate_startstr, rdate_stopstr
+
+	def _parse_dcmdate(self, dcmquery_val, range_sep='-'):
+		'''	Parse a DICOM date string of type: 'yyyymmdd'. Supports:
+
+			* single day values: yyyymmdd. Example: "20100101"
+			* date ranges: "{start}-{end}", "yyyymmdd-yyyymmdd". Example: "20100101-20201231"
+			* start from (open ended range): "{start}-", "yyyymmdd-"". Example: "20100101-"
+			* end on (open ended range): "-{end}", "-yyyymmdd". Example: "-20201231"
+
+			@input dcmquery_val (str): DCM string to be split
+
+			@returns start_ts, end_ts
 		'''
 		rdate_start_ts = rdate_stop_ts = None
-
-		# For query values passed as a tuple/list, convert the query value to a single string
-		if isinstance(dcmquery_val, (tuple, list)):
-
-			# Ensure that the list only contains a single value
-			if len(dcmquery_val) > 1:
-				raise ValueError(
-					'Invalid DICOM date: "%s". DICOM dates must be of the form: yyyymmdd. Example: 20210721' % str(dcmquery_val))
-			
-			# Pull value out of the list
-			dcmquery_val = dcmquery_val[0]
 
 		# Parse date range
 		if range_sep in dcmquery_val:
 
-			# Parse start and stop dates from request query parameter
-			rdate_components = dcmquery_val.split(range_sep)
-			if not len(rdate_components) == 2:
-				raise ValueError('Unable to parse DICOM date filter. Invalid range: %s'  % dcmquery_val)
+			# Parse start/stop from query value
+			rdate_start, rdate_stop = self._clean_dcmdatestr(dcmquery_val, range_sep=range_sep)
+			rdate_start = dcm_str2date(rdate_start) if rdate_start else None
+			rdate_stop = dcm_str2date(rdate_stop) if rdate_stop else None
 
 			# Parse to dates. For ranges with a start component (but not a stop component),
-			# OHIF will a value less than the start. If that is the case, set the stop component to be None.
-			rdate_start, rdate_stop = dcm_str2date(rdate_components[0]) if rdate_components[0] else None, dcm_str2date(rdate_components[1]) if rdate_components[1] else None
+			# OHIF will add a value less than the start. If that is the case, set the stop component to be None.
 			if (rdate_start and rdate_stop) and rdate_stop < rdate_start:
 				rdate_stop = None
 
@@ -106,12 +126,10 @@ class DicomQueryMixin(ABC):
 			# Convert start/stop components to datetime and filter against timestamp of studies.
 			# Filter is inclusive (midnight AM on start to midnight PM on stop).
 			if rdate_start:
-				rdate_start_ts = datetime.datetime.combine(rdate_start, datetime.time(0,0,0))
-				logger.debug('StudyDate start: %s' % rdate_start_ts)	
+				rdate_start_ts = datetime.datetime.combine(rdate_start, datetime.time(0,0,0))				
 
 			if rdate_stop:
-				rdate_stop_ts = datetime.datetime.combine(rdate_stop, datetime.time(23,59,59))
-				logger.debug('StudyDate stop: %s' % rdate_stop_ts)
+				rdate_stop_ts = datetime.datetime.combine(rdate_stop, datetime.time(23,59,59))				
 				
 		# Match study date exactly. Because the CacheStudy.ts is a date/time, a range must
 		# be used to match studies for the desired time period.
@@ -121,6 +139,66 @@ class DicomQueryMixin(ABC):
 			rdate_stop_ts = datetime.datetime.combine(rdate, datetime.time(23,59,59))
 
 		return rdate_start_ts, rdate_stop_ts
+
+	def _parse_dcmdatetime(self, query_val, range_sep='-', timedelta=None):
+		'''	Parse a DICOM date/time string of type 'yyyymmddHHMMSS'. Supports:
+
+			* single timestamp values: yyyymmddHHMMSS. Example: "20100101123000"
+			* date ranges: "{start}-{end}", "yyyymmddHHMMSS-yyyymmddHHMMSS". Example: "20100101-20201231"
+			* start from (open ended range)
+			* end on (open ended range)
+		'''
+		timedelta = timedelta or self.datetime_query_timedelta
+		rdate_start_ts = rdate_stop_ts = None
+
+		# Split date range into start/stop values
+		if range_sep in query_val:
+			rdate_start_ts, rdate_stop_ts = self._clean_dcmdatestr(query_val, range_sep=range_sep)
+			rdate_start_ts = dcm_str2datetime(rdate_start_ts) if rdate_start_ts else None
+			rdate_stop_ts = dcm_str2datetime(rdate_stop_ts) if rdate_stop_ts else None
+
+		# Parse date/time as single value. As most date/time queries must use a range,
+		# a start start and end time is calculated from the provided date/time +/- the timedelta.
+		else:
+			_ts = dcm_str2datetime(query_val)
+			rdate_start_ts = _ts - timedelta
+			rdate_stop_ts = _ts + timedelta
+
+		return rdate_start_ts, rdate_stop_ts
+
+	def parse_dcmdate_queryfilter(self, dcmquery_val: str, range_sep='-'):
+		'''	Parse the provide DICOM query value to a start/end time for querying the resource cache. Both 
+			DICOM date strings and DICOom date/time strings are supported.
+
+			DICOM date strings have the form yyyymmdd with no spaces or dashes. DICOM date/time strings have the form 
+			yyyymmddHHMMSS and may include a dash indicating a range of values.
+		'''
+		# For query values passed as a tuple/list, convert the query value to a single string
+		if isinstance(dcmquery_val, (tuple, list)):
+
+			# Ensure that the list only contains a single value
+			if len(dcmquery_val) > 1:
+				raise ValueError(('Invalid DICOM date: "%s". DICOM dates must be of the form: yyyymmdd (example: 20210721) ' 
+					+ 'or yymmddHHMMSS (example: 20210721123000)')% str(dcmquery_val))
+			
+			# Pull value out of the list
+			dcmquery_val = dcmquery_val[0]
+
+		# Parse date range: check for single value, open ended query ("start from" or "end on"), or date range.
+		# length changes are used in these checks as the structure of the request components will be validated
+		# in the _parse_dcmdate method.
+		if len(dcmquery_val) == 8 \
+			or (range_sep in dcmquery_val and len(dcmquery_val) == 9) \
+			or (range_sep in dcmquery_val and len(dcmquery_val) == 17):
+			return self._parse_dcmdate(dcmquery_val, range_sep=range_sep)
+
+		# Parse date/time range: check for single value, open ended query ("start from" or "end on"), or range.
+		elif (len(dcmquery_val) == 14 and not range_sep in dcmquery_val) \
+			or (range_sep in dcmquery_val and len(dcmquery_val) == 15) \
+			or (range_sep in dcmquery_val and len(dcmquery_val) == 29):
+			return self._parse_dcmdatetime(dcmquery_val, range_sep=range_sep)
+
+		raise ValueError('Invalid DICOM date: %s' % str(dcmquery_val))
 
 	def parse_multivalue_queryfilter(self, dcm_queryval, sep=r'\\', *args, **kwargs):
 		''' Split a multi-value query filter into an iterable of conditions
@@ -289,31 +367,44 @@ class DicomQueryMixin(ABC):
 			# Determine the type of tag: resource level (Patient, Study, Series) and whether it is public/private
 			resource_type = private_tag = None
 
-			# Determine which level of the API at which to apply the header
-			for rtype,rtags in self.cache_dicomtags.items():
-				if otag in rtags:
-					resource_type = rtype
-					break
+			# Filter on resource mtime field (Modified or LastUpdate)
+			if otag == IMAGING_SERVER_LAST_UPDATE or otag == IMAGING_SERVER_MODIFIED:
 
-			# Determine if the header is public or private
-			if self.dcm_privatetags:
-				for rtype,ptags in self.dcm_privatetags.items():
-					if otag in ptags:
-						private_tag = True
-
-			# Unable to locate private tag, mark as public
-			if resource_type and private_tag is None:
+				# Set resource type and and resource model to prevent ordering on JSON field
+				resource_type = self.resource_model.type
 				private_tag = False
-			else:
-				raise ValueError('Unable to order resources. Invalid DICOM header "%s".' % otag)
 
-			# Retrieve tag model and add to ordering options
-			tag_resource_model = SONADOR_CACHE_MODELS.get(resource_type)
-			if private_tag:
-				tag_resource_model = tag_resource_model.privatetags_resource_model			
+				orderby_fields.append(
+					self.resource_model.mtime.desc() if desc else self.resource_model.mtime)
 
-			orderby_fields.append(
-				tag_resource_model.orthanc[otag].astext.desc() if desc else tag_resource_model.orthanc[otag].astext)
+			# Filter on JSON fields (cache model or private cache model)
+			if resource_type is None and private_tag is None:
+
+				# Determine which level of the API at which to apply the header
+				for rtype,rtags in self.cache_dicomtags.items():
+					if otag in rtags:
+						resource_type = rtype
+						break
+
+				# Determine if the header is public or private
+				if self.dcm_privatetags:
+					for rtype,ptags in self.dcm_privatetags.items():
+						if otag in ptags:
+							private_tag = True
+
+				# Unable to locate private tag, mark as public
+				if resource_type and private_tag is None:
+					private_tag = False
+				else:
+					raise ValueError('Unable to order resources. Invalid DICOM header "%s".' % otag)
+
+				# Retrieve tag model and add to ordering options
+				tag_resource_model = SONADOR_CACHE_MODELS.get(resource_type)
+				if private_tag:
+					tag_resource_model = tag_resource_model.privatetags_resource_model			
+
+				orderby_fields.append(
+					tag_resource_model.orthanc[otag].astext.desc() if desc else tag_resource_model.orthanc[otag].astext)
 
 		return dcm_resources.order_by(*tuple(orderby_fields))
 
@@ -365,6 +456,16 @@ class DicomQueryMixin(ABC):
 
 			# Add regex to database filter
 			resources = self.apply_series_queryfilter(resources, series_tagname, series_queryfilter)
+
+		# Apply "modified" filter
+		if self.resource_mtime_query:
+			rx_mtime_start, rx_mtime_stop = self.parse_dcmdate_queryfilter(self.resource_mtime_query)
+
+			# Apply filters
+			if rx_mtime_start:
+				resources = resources.filter(self.resource_model.mtime >= rx_mtime_start)
+			if rx_mtime_stop:
+				resources = resources.filter(self.resource_model.mtime <= rx_mtime_stop)
 
 		# Apply ordering
 		if self.order_by:

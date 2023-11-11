@@ -10,6 +10,7 @@ from client.utils.object import omit, pick
 
 from sonador.apisettings import \
 	IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES,  \
+	IMAGING_SERVER_LAST_UPDATE, IMAGING_SERVER_MODIFIED, \
 	DCMHEADER_MODALITIES_IN_STUDY, DCMHEADER_PATIENT_BIRTHDATE, DCMHEADER_MODALITY, DCMHEADER_STUDY_DATE, DCMHEADER_SERIES_DATE
 from sonador.imaging.helpers.conversion import json2dcmjson
 from sonador.serialization import dcm_str2date, SonadorJsonEncoder
@@ -53,7 +54,8 @@ class CacheStudyQueryView(CacheStudyListBaseView):
 		# applied using a date/time filter.
 		self.query = self.POST.get('Query', {})
 		self.dicom_query = omit(self.query, 
-			(DCMHEADER_PATIENT_BIRTHDATE, DCMHEADER_STUDY_DATE, DCMHEADER_SERIES_DATE, DCMHEADER_MODALITIES_IN_STUDY))
+			(DCMHEADER_PATIENT_BIRTHDATE, DCMHEADER_STUDY_DATE, DCMHEADER_SERIES_DATE, DCMHEADER_MODALITIES_IN_STUDY,
+				IMAGING_SERVER_LAST_UPDATE, IMAGING_SERVER_MODIFIED))
 
 		super().setup(output, uri, request)
 
@@ -64,6 +66,7 @@ class CacheStudyQueryView(CacheStudyListBaseView):
 		self.patient_dob_filter = self.query.get(DCMHEADER_PATIENT_BIRTHDATE)	
 		self.study_date_filter = self.query.get(DCMHEADER_STUDY_DATE)
 		self.series_date_filter = self.query.get(DCMHEADER_SERIES_DATE)
+		self.resource_mtime_query = self.query.get(IMAGING_SERVER_LAST_UPDATE) or self.query.get(IMAGING_SERVER_MODIFIED)
 		self.order_by = self.POST.get(SONADOR_CACHE_ORDER_BY)
 
 	def orthanc_studyjson(self, cstudy):
@@ -95,7 +98,7 @@ class CacheStudyQueryView(CacheStudyListBaseView):
 			}), status_code=400)
 
 		except Exception as err:
-			emsg = 'Unable to exceute study search due to an error. Error: "%s"'
+			emsg = 'Unable to exceute study search due to an error. Error: "%s"' % err
 			logger.error('%s\n%s' % (emsg, traceback.format_exc()))
 
 			return self.send_response(json.dumps({

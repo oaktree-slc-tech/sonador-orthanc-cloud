@@ -203,28 +203,36 @@ def remove_cache_serverchange_callback(sonador_manager: SonadorServerManager, se
 			@input level: DICOM resource level
 			@input resource: UID of the modified resource
 	'''
-	def serverchange_callback(changeType, level, resource):
+	def serverchange_callback(changeType, level, resource, commit=True):
 		with sessionmaker() as session:
 			logger.debug('remove DICOM resource (change-type=%s): level=%s resource=%s' % (changeType, level, resource))
 
 			try :
 				# Query cache model instance from the database and attempt to remove
-				c = session.query(cachemodel).get(resource)
+				c = session.query(cachemodel).filter_by(uid=resource).first()
 				if c: session.delete(c)
 				else:
 					logger.warning('Unable to retrieve resource "%s" from cache table "%s", instance does not exist.'
 						% (resource, cachemodel.__tablename__))
 
 				# Remove private tags instance
-				pc = session.query(cachemodel.privatetags_resource_model).get(resource)
+				pc = session.query(cachemodel.privatetags_resource_model).filter_by(uid=resource).first()
 				if pc: session.delete(pc)
 
 				# Remove indexed date/time tags
 				for dc in session.query(cachemodel.datetime_resource_model).filter_by(uid=resource):
 					session.delete(dc)
 
+				# Remove comments
+				if hasattr(cachemodel, 'comment_model'):
+					for c in session.query(cachemodel.comment_model).filter_by(**{
+							cachemodel.comment_model.resource_foreignkey_attr: resource
+						}):
+						session.delete(c)
+
 				# Commit changes to database
-				session.commit()
+				if commit:
+					session.commit()
 
 			except Exception as err:
 				logger.error('Unable to remove resource "%s" from cache table "%s". Error:\n%s'
