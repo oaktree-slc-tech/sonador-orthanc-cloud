@@ -1,9 +1,12 @@
 --extra-index-url https://code.oak-tree.tech/api/v4/projects/335/packages/pypi/simple
 
+# Data Management
+pydantic
+
 # Client Dependencies and Secure API
 numpy>=1.22.3
-sonador>=0.3.0-alpha29
-sonador-orthanc-common>=0.2-alpha3
+sonador>=0.3.0-beta1
+sonador-orthanc-common>=0.2-beta1
 
 # Data Streaming
 confluent-kafka>=2.3.0
