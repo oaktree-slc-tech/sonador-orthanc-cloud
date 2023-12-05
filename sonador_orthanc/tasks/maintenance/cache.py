@@ -197,8 +197,7 @@ def remove_cache_resource(sonador_manager: SonadorServerManager, sessionmaker, c
 			to be used for database connections
 		@input cachemodel: cachemodel type which should be used for removing the instance
 	'''
-	with sessionmaker() as session:
-		logger.debug('remove DICOM resource (change-type=%s): level=%s resource=%s' % (changeType, level, resource))
+	with sessionmaker() as session:		
 
 		try :
 			# Query cache model instance from the database and attempt to remove
@@ -247,6 +246,7 @@ def remove_cache_serverchange_callback(sonador_manager: SonadorServerManager, se
 			@input resource: UID of the modified resource
 	'''
 	def serverchange_callback(changeType, level, resource, commit=True):
+		logger.debug('remove DICOM resource (change-type=%s): level=%s resource=%s' % (changeType, level, resource))
 		return remove_cache_resource(sonador_manager, sessionmaker, cachemodel, resource, commit=commit)
 
 	return serverchange_callback
