@@ -28,7 +28,7 @@ from ..db.internal import Resource, \
 from ..db.comments import ImagingSeriesComment
 
 from ..tasks.maintenance import cache_bulk_index_patients, cache_bulk_index_studies, cache_bulk_index_series, \
-	cache_index_patient, cache_index_study, cache_index_series
+	cache_index_patient, cache_index_study, cache_index_series, remove_cache_resource
 
 from .base import OrthancBaseView
 from .helpers import paginate_query_results
@@ -275,19 +275,15 @@ class CacheIndexResourceView(ResourceUidMixin, OrthancBaseView):
 				# Remove resource from the cache
 				cr = session.query(self.resource_cachemodel).get(r.publicid)
 				if cr:
-					session.delete(cr)
+
+					# Remove the instance and other associated resources
+					remove_cache_resource(self.sonador_manager, self.sessionmaker, self.resource_cachemodel,
+						self.get_resource_uid(*args, **kwargs), commit=True)
 					response[gcapicodes.STATUS] = gcapicodes.SUCCESS
 				else:
 					response[gcapicodes.STATUS] = gcapicodes.FAIL
 					response[gcapicodes.ERROR] = 'Resource type=%s uid=%s not present in resource cache' \
 						% (self.resource_type, r.publicid)
-
-				# Remove associated public tags (not user-facing).
-				pcr = session.query(self.resource_cachemodel.privatetags_resource_model).get(r.publicid)
-				if pcr:
-					session.delete(pcr)
-				
-				session.commit()
 
 				return self.send_response(json.dumps(response, cls=SonadorJsonEncoder))
 
@@ -296,6 +292,17 @@ class CacheIndexResourceView(ResourceUidMixin, OrthancBaseView):
 				gcapicodes.ERROR: 'Resource uid=%s does not exist' \
 					% self.get_resource_uid(*args, **kwargs) or '(none)',
 			})
+
+			# Check the Sonador cache to see if it is part of the local cache.
+			# If so, remove the entry and all other associated data to prevent ghost entries.
+			with sessionmaker() as session:
+				_r = session.query(self.resource_cachemodel).filter_by(uid=self.get_resource_uid(*args, **kwargs)).first()
+				if _r:
+					remove_cache_resource(self.sonador_manager, self.sessionmaker, self.resource_cachemodel, _r.uid, commit=True)
+					response[gcapicodes.STATUS] = gcapicodes.SUCCESS
+					response[gcapicodes.ERROR] = ('Resource type=%s uid=%s not found in database but present in resource cache. '
+						+ 'Cache instance has been removed.') % (self.resource_type, _r.uid)
+			
 			return self.http404_resource_not_found(response=response)
 
 		except Exception as err:

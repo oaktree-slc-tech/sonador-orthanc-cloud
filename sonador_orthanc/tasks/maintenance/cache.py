@@ -189,6 +189,49 @@ def cache_index_serverchange_callback(sonador_manager: SonadorServerManager, ses
 	return serverchange_callback
 
 
+def remove_cache_resource(sonador_manager: SonadorServerManager, sessionmaker, cachemodel, resource, commit=True):
+	'''	Remove a resource instance from the provided cache model
+
+		@input sonador_manager (orthanc_sonador.manager.SonadorServerManager): Sonador manager instance
+		@input sessionmaker (sqlalchemy.orm.session.sessionmaker): Sessionmaker instance
+			to be used for database connections
+		@input cachemodel: cachemodel type which should be used for removing the instance
+	'''
+	with sessionmaker() as session:
+		logger.debug('remove DICOM resource (change-type=%s): level=%s resource=%s' % (changeType, level, resource))
+
+		try :
+			# Query cache model instance from the database and attempt to remove
+			c = session.query(cachemodel).filter_by(uid=resource).first()
+			if c: session.delete(c)
+			else:
+				logger.warning('Unable to retrieve resource "%s" from cache table "%s", instance does not exist.'
+					% (resource, cachemodel.__tablename__))
+
+			# Remove private tags instance
+			pc = session.query(cachemodel.privatetags_resource_model).filter_by(uid=resource).first()
+			if pc: session.delete(pc)
+
+			# Remove indexed date/time tags
+			for dc in session.query(cachemodel.datetime_resource_model).filter_by(uid=resource):
+				session.delete(dc)
+
+			# Remove comments
+			if hasattr(cachemodel, 'comment_model'):
+				for c in session.query(cachemodel.comment_model).filter_by(**{
+						cachemodel.comment_model.resource_foreignkey_attr: resource
+					}):
+					session.delete(c)
+
+			# Commit changes to database
+			if commit:
+				session.commit()
+
+		except Exception as err:
+			logger.error('Unable to remove resource "%s" from cache table "%s". Error:\n%s'
+				% (resource, cachemodel.__tablename__, err))
+
+
 def remove_cache_serverchange_callback(sonador_manager: SonadorServerManager, sessionmaker, cachemodel, **kwargs):
 	'''	Create a server change callback that can be registered to an Orthanc event for removing DICOM 
 		resources from the server cache.
@@ -204,38 +247,6 @@ def remove_cache_serverchange_callback(sonador_manager: SonadorServerManager, se
 			@input resource: UID of the modified resource
 	'''
 	def serverchange_callback(changeType, level, resource, commit=True):
-		with sessionmaker() as session:
-			logger.debug('remove DICOM resource (change-type=%s): level=%s resource=%s' % (changeType, level, resource))
-
-			try :
-				# Query cache model instance from the database and attempt to remove
-				c = session.query(cachemodel).filter_by(uid=resource).first()
-				if c: session.delete(c)
-				else:
-					logger.warning('Unable to retrieve resource "%s" from cache table "%s", instance does not exist.'
-						% (resource, cachemodel.__tablename__))
-
-				# Remove private tags instance
-				pc = session.query(cachemodel.privatetags_resource_model).filter_by(uid=resource).first()
-				if pc: session.delete(pc)
-
-				# Remove indexed date/time tags
-				for dc in session.query(cachemodel.datetime_resource_model).filter_by(uid=resource):
-					session.delete(dc)
-
-				# Remove comments
-				if hasattr(cachemodel, 'comment_model'):
-					for c in session.query(cachemodel.comment_model).filter_by(**{
-							cachemodel.comment_model.resource_foreignkey_attr: resource
-						}):
-						session.delete(c)
-
-				# Commit changes to database
-				if commit:
-					session.commit()
-
-			except Exception as err:
-				logger.error('Unable to remove resource "%s" from cache table "%s". Error:\n%s'
-					% (resource, cachemodel.__tablename__, err))
+		return remove_cache_resource(sonador_manager, sessionmaker, cachemodel, resource, commit=commit)
 
 	return serverchange_callback
