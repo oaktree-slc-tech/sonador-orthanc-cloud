@@ -197,7 +197,7 @@ def remove_cache_resource(sonador_manager: SonadorServerManager, sessionmaker, c
 			to be used for database connections
 		@input cachemodel: cachemodel type which should be used for removing the instance
 	'''
-	with sessionmaker() as session:		
+	with sessionmaker() as session:
 
 		try :
 			# Query cache model instance from the database and attempt to remove
