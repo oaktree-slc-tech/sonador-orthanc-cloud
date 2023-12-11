@@ -1,6 +1,6 @@
 '''	Orthanc views which help with the management of the comments table.
 '''
-import logging, json, uuid, traceback
+import logging, json, uuid, traceback, re
 
 from pydantic import BaseModel, constr
 
@@ -8,16 +8,18 @@ import client.apisettings as gcapicodes
 from client.errors import ConfigurationError, ResourceDoesNotExist
 
 from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, \
-	IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_IMAGE
+	IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_IMAGE, DCMHEADER_SERIES_INSTANCE_UID
 from sonador.serialization import SonadorJsonEncoder
 
 from ..db.comments import ImagingSeriesComment
 from ..db.helpers import orthanc_commentjson
 from ..validation import CommentValidationForm
 from ..db.cache import CacheSeries
+from ..db.internal import DicomIdentifiers
 
 from .base import OrthancBaseView
 from .cache import ResourceUidMixin
+from .dicomweb import DicomResourceMixin
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,12 @@ class CommentSeriesManagementView(ResourceUidMixin, OrthancBaseView):
 		# Ensure that a resource model has been defined and an index method is available
 		self.init_resource_mixin(*args, **kwargs)
 
+	def get_comments(self, session, *args, ruid=None, **kwargs):
+		'''	Retrieve the comment instances for the view resource
+		'''
+		ruid = ruid or self.get_resource_uid(*args, **kwargs)
+		return session.query(self.comment_model).filter_by(series_id=ruid)
+
 	def get(self, output, uri, request, *args, **kwargs):
 		''' Retrieve Comments list from series
 		'''
@@ -69,7 +77,7 @@ class CommentSeriesManagementView(ResourceUidMixin, OrthancBaseView):
 				
 				# Query database for comments related to the current series
 				return self.send_response(json.dumps(
-					[self.orthanc_commentjson(c) for c in session.query(self.comment_model).filter_by(series_id=sid)],
+					[self.orthanc_commentjson(c) for c in self.get_comments(session, ruid=sid)],
 					cls=SonadorJsonEncoder))
 
 		except ResourceDoesNotExist as err:			
@@ -82,7 +90,7 @@ class CommentSeriesManagementView(ResourceUidMixin, OrthancBaseView):
 	
 	def post(self, output, uri, request, *args, **kwargs):
 		''' Append new comment to the Comments list in series
-		'''		
+		'''	
 		try:
 			with self.sessionmaker() as session:
 
@@ -97,12 +105,10 @@ class CommentSeriesManagementView(ResourceUidMixin, OrthancBaseView):
 				}, cls=SonadorJsonEncoder), status_code=201)
 
 		except ResourceDoesNotExist as err:
-			response.update({
+			return self.http404_resource_not_found(response={
 				gcapicodes.ERROR: 'Resource uid=%s does not exist' % self.get_resource_uid(*args, **kwargs) or '(none)',
 				gcapicodes.STATUS: gcapicodes.FAIL
 			})
-
-			return self.http404_resource_not_found(response=response)
 
 		except Exception as err:
 			logger.error('Unable to create comment due to an error. Error: "%s"\n%s' % (err, traceback.format_exc()))
@@ -250,3 +256,29 @@ class CommentSeriesRestView(ResourceUidMixin, OrthancBaseView):
 			})
 
 			return self.http404_resource_not_found(response=response)
+
+
+class DicomSeriesJsonMixin(object):
+	'''	Mixin class which adds the SeriesInstanceUID to comment JSON attributes
+	'''
+	def orthanc_commentjson(self, c, *args, **kwargs):
+		'''	Add the DICOM series instance UID to the JSON response
+		'''
+		cjson = super().orthanc_commentjson(c)
+		cjson[DCMHEADER_SERIES_INSTANCE_UID] = self.get_resource_uid(*args, **kwargs)
+		return cjson
+
+
+class CommentSeriesDICOMManagementView(DicomSeriesJsonMixin, DicomResourceMixin, CommentSeriesManagementView):
+	'''	DICOMweb comment management view: list and create
+	'''
+	def get_comments(self, session, *args, ruid=None, **kwargs):
+		'''	Retrieve the comment instances for the view resource
+		'''
+		r = self.get_resource(session, *args, ruid=ruid, **kwargs)
+		return session.query(self.comment_model).filter_by(series_id=r.publicid)
+
+
+class CommentSeriesDICOMRestView(DicomSeriesJsonMixin, DicomResourceMixin, CommentSeriesRestView):
+	'''	DICOMweb REST view: retrieve individual comment instances, update, and delete comments
+	'''

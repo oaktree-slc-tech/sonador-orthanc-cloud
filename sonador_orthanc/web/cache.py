@@ -11,7 +11,7 @@ from client.errors import ConfigurationError, ResourceDoesNotExist
 from client.utils.conversion import str2bool
 from client.utils.object import omit, pick
 
-from sonador.apisettings import IMAGING_SERVER_UID_REGEX, \
+from sonador.apisettings import IMAGING_SERVER_UID_REGEX, DICOM_UID_REGEX, \
 	IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES
 from sonador.serialization import SonadorJsonEncoder
 
@@ -23,7 +23,7 @@ from ..apisettings import \
 	SONADOR_CACHE_COUNT_PATIENT, SONADOR_CACHE_COUNT_STUDY, SONADOR_CACHE_COUNT_SERIES
 from ..db.base import DbBase
 from ..db.cache import CacheSeries, CacheStudy, CachePatient
-from ..db.internal import Resource, \
+from ..db.internal import Resource, DicomIdentifiers, \
     ORTHANCDB_PATIENT_TYPE, ORTHANCDB_STUDY_TYPE, ORTHANCDB_SERIES_TYPE
 from ..db.comments import ImagingSeriesComment
 
@@ -102,12 +102,13 @@ class ResourceBaseMixin(object):
 				'Unable to initialize %s (uri=%s) view instance, invalid resource code (code=%s).' 
 					% (type(self).__name__, getattr(self, 'uri', None), self.resource_code))
 
-	def get_resource_uid(self, *args, **kwargs):
+	def get_resource_uid(self, *args, resource_uri=None, **kwargs):
 		''' Retrieve the UID of the DICOM resource from the URL
 
 			@returns str or None: UID if there was a match, None otherwise
 		'''
-		ruid_match = self.resource_uid_regex.match(self.uri)
+		resource_uri = resource_uri or self.uri
+		ruid_match = self.resource_uid_regex.match(resource_uri)
 		return ruid_match.groupdict().get('uid') if ruid_match else None
 
 	def get_resource(self, session, ruid=None, *args, **kwargs):

@@ -14,3 +14,7 @@ class Resource(AutoDbBase):
 
 class Changes(AutoDbBase):
 	__tablename__ = 'changes'
+
+
+class DicomIdentifiers(AutoDbBase):
+	__tablename__ = 'dicomidentifiers'

@@ -375,7 +375,8 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 			import sonador_orthanc.web.dicomweb as sonador_dicomweb
 
 			# Initialize cached DICOMweb study list endpoint
-			sonador_dicomweb.init_cached_endpoints(CONF, OrthancSession)
+			sonador_dicomweb.init_cached_endpoints(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
+			sonador_dicomweb.init_ext_endpoints(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
 
 		# Cache Query Endpoints
 		from sonador_orthanc.web.patient import CachePatientQueryView, SonadorPatientResourceView
@@ -406,6 +407,7 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 			CommentSeriesManagementView.as_view(sessionmaker=OrthancSession))
 		orthanc.RegisterRestCallback(r'/series/([0-9a-fA-F]{8}\-?){5}/comments/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
 			CommentSeriesRestView.as_view(sessionmaker=OrthancSession))
+
 
 		# Cache C-FIND handlers
 		from sonador_orthanc.tasks.find import DicomCacheCFindCallback
