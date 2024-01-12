@@ -213,7 +213,7 @@ class CachePatientQueryMixin(object):
 
 		# Query series private tags
 		elif self.dcm_privatetags and self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES) \
-			and study_tagname in self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES, []):
+			and series_tagname in self.dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES, []):
 			return dcm_resources.filter(CachePatient.studies_collection.any(
 				CacheStudy.series_collection.any(
 					CacheSeries.privatetags.has(
