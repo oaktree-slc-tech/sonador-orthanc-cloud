@@ -3,8 +3,8 @@ FROM oaktreetech/orthanc-s3:latest
 ARG CI_COMMIT_SHA
 ARG CLI_CI_COMMIT_SHA
 
-# Install Python Requests Module
-RUN apt-get update && apt-get install -y python3-requests libtiff5-dev libjpeg-dev zlib1g-dev \
+# Install Python Requests Module and Other Dependencies
+RUN apt-get update && apt-get install -y git build-essential python3-requests libtiff5-dev libjpeg-dev zlib1g-dev \
   libfreetype6-dev liblcms2-dev libwebp-dev libharfbuzz-dev libfribidi-dev librdkafka-dev \
   tcl8.6-dev tk8.6-dev python3-tk
 

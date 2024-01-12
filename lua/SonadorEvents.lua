@@ -25,11 +25,11 @@ end
 
 function OnDeletedSeries(seriesId)
 	-- Trigger Sonador internal REST endpoint to allow processing of "DELETE" series events	
-	RestApiDelete('/sonador/internal/series/change/' .. seriesId	)
+	RestApiDelete('/sonador/internal/series/change/' .. seriesId)
 end
 
 
 function OnUpdatedSeries(seriesId)
 	-- Trigger Sonador internal REST endpoint to allow processing of "UPDATE" series events
-	RestApiPut('/sonador/internal/series/change/' .. seriesId)
+	RestApiPut('/sonador/internal/series/change/' .. seriesId, '{}')
 end
