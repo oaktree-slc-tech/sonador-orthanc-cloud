@@ -296,7 +296,7 @@ class CacheIndexResourceView(ResourceUidMixin, OrthancBaseView):
 
 			# Check the Sonador cache to see if it is part of the local cache.
 			# If so, remove the entry and all other associated data to prevent ghost entries.
-			with sessionmaker() as session:
+			with self.sessionmaker() as session:
 				_r = session.query(self.resource_cachemodel).filter_by(uid=self.get_resource_uid(*args, **kwargs)).first()
 				if _r:
 					remove_cache_resource(self.sonador_manager, self.sessionmaker, self.resource_cachemodel, _r.uid, commit=True)
