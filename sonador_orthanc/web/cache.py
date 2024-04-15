@@ -281,12 +281,14 @@ class CacheIndexResourceView(ResourceUidMixin, OrthancBaseView):
 					remove_cache_resource(self.sonador_manager, self.sessionmaker, self.resource_cachemodel,
 						self.get_resource_uid(*args, **kwargs), commit=True)
 					response[gcapicodes.STATUS] = gcapicodes.SUCCESS
+				
 				else:
 					response[gcapicodes.STATUS] = gcapicodes.FAIL
 					response[gcapicodes.ERROR] = 'Resource type=%s uid=%s not present in resource cache' \
 						% (self.resource_type, r.publicid)
 
-				return self.send_response(json.dumps(response, cls=SonadorJsonEncoder))
+				return self.send_response(json.dumps(response, cls=SonadorJsonEncoder),
+					status_code=gcapicodes.STATUS_400 if response.get(gcapicodes.STATUS) == gcapicodes.FAIL else 200)
 
 		except ResourceDoesNotExist as err:
 			response.update({
