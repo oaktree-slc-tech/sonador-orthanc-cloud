@@ -2,7 +2,7 @@ from sonador_orthanc_common.apisettings import *
 
 
 # Sonador/Orthanc Plugin Version
-VERSION = '0.3-beta4'
+VERSION = '0.3'
 
 # Sonador Cache Index Status Codes
 SONADOR_CACHE_STATUS_CURRENT = 'current'
