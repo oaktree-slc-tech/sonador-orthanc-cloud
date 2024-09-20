@@ -107,3 +107,8 @@ class SonadorSeriesResourceView(SonadorResourceBaseView):
 	'''
 	resource_base = 'series'
 	resource_cachemodel = CacheSeries
+
+	def orthanc_json_extended_attrs(self, response, session=None, resource=None, **kwargs):
+		'''	Add additional parameters to the response, based on request options
+		'''
+		return response

@@ -5,8 +5,8 @@ pydantic
 
 # Client Dependencies and Secure API
 numpy>=1.22.3
-sonador>=0.3.1
-sonador-orthanc-common>=0.2-beta1
+sonador>=0.4.0b1
+sonador-orthanc-common>=0.2.5
 
 # Data Streaming
 confluent-kafka>=2.3.0

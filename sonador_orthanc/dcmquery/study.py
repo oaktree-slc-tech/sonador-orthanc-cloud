@@ -36,7 +36,7 @@ class CacheStudyQueryMixin(object):
 				'Unable to initialize, `series_date_filter` is a required property for the %s view' % type(self).__name__)
 
 	def apply_session_options(self, session, basequery, *args, **kwargs):
-		'''	Create join between primary and private DICOM cache tables
+		'''	Create join between primary and private DICOM cache tables and fetch both
 		'''
 		basequery = super().apply_session_options(session, basequery, *args, **kwargs)
 		return basequery.options(joinedload(self.resource_model.privatetags))

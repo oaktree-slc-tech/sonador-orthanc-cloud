@@ -8,7 +8,7 @@ from client.errors import ConfigurationError
 
 from sonador.apisettings import DicomDatetimePairKey, \
 	IMAGING_SERVER_RESOURCE_IMAGE, IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_PATIENT, \
-	IMAGING_SERVER_RESOURCE_SUPPORTED, DCMHEADER_SERIES_INSTANCE_UID, DCMHEADER_STUDY_ID, DCMHEADER_PATIENT_ID
+	IMAGING_SERVER_RESOURCE_SUPPORTED, DCMHEADER_SERIES_INSTANCE_UID, DCMHEADER_STUDY_ID, DCMHEADER_PATIENT_ID, IMAGING_SERVER_UID_REGEX
 from sonador.servers import SonadorServer, SonadorImagingServer
 
 from sonador_orthanc_common.apisettings import ORTHANC_CONFIG_SECTION_DICT
@@ -22,7 +22,8 @@ from sonador_orthanc.apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, \
 	ORTHANC_DEFAULT_ENCODING, \
 	SONADOR_RESOURCE_UPDATE_PATIENT, SONADOR_RESOURCE_UPDATE_STUDY, SONADOR_RESOURCE_UPDATE_SERIES, \
 	SONADOR_RESOURCE_DELETE_PATIENT, SONADOR_RESOURCE_DELETE_STUDY, SONADOR_RESOURCE_DELETE_SERIES, \
-	SONADOR_CONF_PRIVATE_TAGS, SONADOR_CONF_DATETIME_TAGS
+	SONADOR_CONF_PRIVATE_TAGS, SONADOR_CONF_DATETIME_TAGS, \
+	SONADOR_CACHE_URL_ROOT, SONADOR_CACHE_TAGS_URL
 from sonador_orthanc.helpers import init_sonador_server
 from sonador_orthanc.manager import SonadorServerManager, \
 	TIMER_30S, TIMER_MINUTE, TIMER_10MIN, TIMER_30MIN, TIMER_HOUR, TIMER_DAILY
@@ -30,10 +31,6 @@ from sonador_orthanc.manager import SonadorServerManager, \
 logger = logging.getLogger(__name__)
 
 KAFKA_TIMEOUT_DEFAULT = 10
-
-
-# Background timers
-CONFIG_TIMER = None
 
 
 orthanc.LogWarning('Sonador/Orthanc integration plugin enabled')
@@ -51,33 +48,29 @@ CONF_DICOM_PRIVATEDICT['Tags'] = set(t[1] for t in CONF_DICOM_PRIVATEDICT.values
 CONF_DICOM_PRIVATETAGS = CONF.get(SONADOR_CONF_PRIVATE_TAGS, {})
 
 
+# Kafka Configuration
+CONF_KAFKA = CONF_SONADOR.get('Kafka', {})
+if CONF_KAFKA:
+
+	from sonador_orthanc import kafka
+
+	# Initialize kafka producer
+	KAFKA_PRODUCER = kafka.init_kafka_producer(CONF)
+
+else: KAFKA_PRODUCER = None
+
+
 # Initialize Sonador API client and check that all required authentication
 # components are present (Sonador API clients should authenticate with API tokens)
 if not CONF_SONADOR:
 	raise ValueError('Invalid configuration, unable to locate Sonador section of configuration')
 
 SONADOR_SERVER, ORTHANC_SONADOR_SERVERID = init_sonador_server(CONF_SONADOR)
-ORTHANC_SONADOR_MANAGER = SonadorServerManager(SONADOR_SERVER, ORTHANC_SONADOR_SERVERID, 
-	conf=CONF_SONADOR, private_tags_dict=CONF_DICOM_PRIVATEDICT)
+ORTHANC_SONADOR_MANAGER = SonadorServerManager(SONADOR_SERVER, ORTHANC_SONADOR_SERVERID,
+	conf=CONF_SONADOR, private_tags_dict=CONF_DICOM_PRIVATEDICT, kafka_producer=KAFKA_PRODUCER)
 
 # Register/update Orthanc configuration with Sonador
 ORTHANC_SONADOR_MANAGER.register_server()
-
-
-# Kafka Configuration
-CONF_KAFKA = CONF_SONADOR.get('Kafka', {})
-if CONF_KAFKA and CONF_KAFKA.get('servers'):
-	KAFKA_SERVERS = ','.join(CONF_KAFKA.get('servers', [])) if isinstance(CONF_KAFKA.get('servers'), (tuple, list)) \
-		else CONF_KAFKA.get('servers') if isinstance(CONF_KAFKA.get('servers'), six.string_types) \
-		else None
-	KAFKA_TOPIC = CONF_KAFKA.get('topic')
-
-	if not KAFKA_SERVERS or not KAFKA_TOPIC:
-		raise ValueError('Unable to initialize Kafka connection, invalid server list or topic')
-
-	KAFKA_PRODUCER = Producer({ 'bootstrap.servers': KAFKA_SERVERS })
-
-else: KAFKA_PRODUCER = None
 
 
 
@@ -100,14 +93,14 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 	# Initialize database connection
 	ORTHANC_SQLENGINE, OrthancSession = init_postgresdb_conn(CONF_POSTGRESQL)
 
-	
+
 	def orthanc_db_onstart(changeType, level, resource):
 		'''	Initialize database tables and AutoDb tables after server startup
 		'''
 		DbBase.metadata.create_all(bind=ORTHANC_SQLENGINE, checkfirst=True)
 		AutoDbBase.prepare(autoload_with=ORTHANC_SQLENGINE)
 
-	
+
 	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 		orthanc.ChangeType.ORTHANC_STARTED, orthanc_db_onstart)
 
@@ -120,140 +113,8 @@ else:
 
 if KAFKA_PRODUCER != None:
 
-	def orthanc_kafka_delivery_report(err, msg):
-		'''	The Kafka producer delivers data asyncrhnously. This function is the
-			callback by the Kafka client to indicate whether a message was delivered
-			successfully or with an error. For successful deliveries, "err" will be None.
-
-			@input err (exception, None for successful deliveries): Error report from the Kafka
-				Producer client.
-			@input msg (message instance): Message instance delivered to the Kafka broker
-		'''
-		if err is not None:
-			orthanc.LogError('Unable to deliver message to Kafka instance %s. Error: %s\n%s' 
-				% (err, KAFKA_SERVERS, msg.value()))
-			KAFKA_PRODUCER.produce(KAFKA_TOPIC, msg.value(), callback=orthanc_kafka_delivery_report)
-
-
-	def orthanc_kafka_export_instance_meta(dicom, instanceId):
-		'''	Export DICOM instance metadata to Kafka
-		'''
-		# Create message structure
-		idata = json.loads(dicom.GetInstanceSimplifiedJson())
-		mdata = {
-			KTAG_ORTHANC_SERVER_ID: ORTHANC_SONADOR_SERVERID,
-			KTAG_ORTHANC_SERVER_RESOURCE: 'Instance',
-			'ID': instanceId, 
-			KTAG_ORTHANC_SERVER_SOURCE: 'DCM' if dicom.GetInstanceOrigin() == orthanc.InstanceOrigin.DICOM_PROTOCOL \
-				else 'REST' if dicom.GetInstanceOrigin() == orthanc.InstanceOrigin.REST_API \
-				else None,
-			KTAG_ORTHANC_SERVER_DICOM: idata,
-		}
-
-		# Move patient, study, and series identifiers to the top-level
-		if idata.get(DCMHEADER_PATIENT_ID):
-			mdata[DCMHEADER_PATIENT_ID] = idata.get(DCMHEADER_PATIENT_ID)
-		if idata.get(DCMHEADER_STUDY_ID):
-			mdata[DCMHEADER_STUDY_ID] = idata.get(DCMHEADER_STUDY_ID)
-		if idata.get(DCMHEADER_SERIES_INSTANCE_UID):
-			mdata[DCMHEADER_SERIES_INSTANCE_UID] = idata.get(DCMHEADER_SERIES_INSTANCE_UID)
-		
-		orthanc.LogInfo('JSON data for DICOM instance:\n%r' % mdata)
-
-		# Send to Kafka
-		KAFKA_PRODUCER.produce(KAFKA_TOPIC, json.dumps(mdata), callback=orthanc_kafka_delivery_report)
-
-
-	def orthanc_kafka_onstable_resource(changeType, level, resource):
-		'''	Export data to Kafka about the DICOM resource marked as stable
-		'''
-		mdata = {
-			KTAG_ORTHANC_SERVER_ID: ORTHANC_SONADOR_SERVERID,
-			'ID': resource,
-		}
-
-		# Patient	
-		if changeType == orthanc.ChangeType.STABLE_PATIENT:
-			mdata[KTAG_ORTHANC_SERVER_RESOURCE] = IMAGING_SERVER_RESOURCE_PATIENT
-			rdata = json.loads(orthanc.RestApiGet('/patients/%s' % resource))
-
-		# Study
-		elif changeType == orthanc.ChangeType.STABLE_STUDY:
-			mdata[KTAG_ORTHANC_SERVER_RESOURCE] = IMAGING_SERVER_RESOURCE_STUDY
-			rdata = json.loads(orthanc.RestApiGet('/studies/%s' % resource))
-
-		# Series
-		elif changeType == orthanc.ChangeType.STABLE_SERIES:
-			mdata[KTAG_ORTHANC_SERVER_RESOURCE] = IMAGING_SERVER_RESOURCE_SERIES
-			rdata = json.loads(orthanc.RestApiGet('/series/%s' % resource))
-
-		# Add resource data to the message
-		mdata[KTAG_ORTHANC_SERVER_DICOM] = rdata
-
-		# Move patient, study, and series identifiers to the top-level
-		if rdata.get(DCMHEADER_PATIENT_ID):
-			mdata[DCMHEADER_PATIENT_ID] = rdata.get(DCMHEADER_PATIENT_ID)
-		if rdata.get(DCMHEADER_STUDY_ID):
-			mdata[DCMHEADER_STUDY_ID] = rdata.get(DCMHEADER_STUDY_ID)
-		if rdata.get(DCMHEADER_SERIES_INSTANCE_UID):
-			mdata[DCMHEADER_SERIES_INSTANCE_UID] = rdata.get(DCMHEADER_SERIES_INSTANCE_UID)
-
-		# Send to Kafka
-		KAFKA_PRODUCER.produce(KAFKA_TOPIC, json.dumps(mdata), callback=orthanc_kafka_delivery_report)
-
-
-	def kafka_message_flush(poll_timeout=KAFKA_TIMEOUT_DEFAULT):
-		'''	Flush messages to Kafka and retrieve transaction receipts
-		'''
-		try:
-			logger.info('Push Kafka messages to broker: %s' % KAFKA_SERVERS)
-			KAFKA_PRODUCER.poll(0)
-
-		except Exception as err:
-			logger.error('Unable to perform scheduled Kafka message flush due. Error: %s.\n%s'
-				% (err, traceback.format_exc()))
-
-	def orthanc_kafka_onstart(changeType, level, resource):
-		'''	Initialize Orthanc/Kafka integration. Handle server state changes.
-
-			@event: Initialize "poll" event loop to retrieve Kafka message receipts
-				and flush messages to the Kafka broker.
-			@event: Perform one final "flush" to allow for messages to be delieverd 
-				and report callbacks to be triggered.
-		'''
-		# Initialize Sonador Kafka agent	
-		orthanc.LogWarning('Start Orthanc/Kafka message scheduler')
-		kafka_message_flush()
-
-
-	def orthanc_kafka_onstop(changeType, level, resource):
-		''' Turn off Orthanc/Kafka message scheduler and clear any pending messages
-		'''
-		# Stop Orthanc Kafka agent and flush all pending messages
-		orthanc.LogWarning('Stop Orthanc/Kafka message scheduler')
-		KAFKA_PRODUCER.flush()
-
-
-	# Kafka start/stop callbacks
-	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
-		orthanc.ChangeType.ORTHANC_STARTED, orthanc_kafka_onstart)
-	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
-		orthanc.ChangeType.ORTHANC_STOPPED, orthanc_kafka_onstop)
-
-	# Stable patient, study, and series events
-	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
-		orthanc.ChangeType.STABLE_PATIENT, orthanc_kafka_onstable_resource)
-	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
-		orthanc.ChangeType.STABLE_STUDY, orthanc_kafka_onstable_resource)
-	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
-		orthanc.ChangeType.STABLE_SERIES, orthanc_kafka_onstable_resource)
-
-	# Kafka scheduled events
-	ORTHANC_SONADOR_MANAGER.register_recurring_task(TIMER_30S, kafka_message_flush)
-
-	# Kafka storage callbacks
-	orthanc.RegisterOnStoredInstanceCallback(orthanc_kafka_export_instance_meta)
-
+	from sonador_orthanc import kafka
+	kafka.init(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
 
 
 # Server manager start/stop callbacks
@@ -268,9 +129,9 @@ def orthanc_sonador_onstart(changeType, level, resource):
 	try:
 		fetch_sonador_configuration()
 		ORTHANC_SONADOR_MANAGER.start()
-	
+
 	except Exception as err:
-		logger.error('Unable to start Sonador server manager. Error:\n%s.\nTraceback:\n%s' 
+		logger.error('Unable to start Sonador server manager. Error:\n%s.\nTraceback:\n%s'
 			% (err, traceback.format_exc()))
 
 
@@ -332,7 +193,7 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 			CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_PATIENT, []),
 			CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_STUDY, []),
 			CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_SERIES, [])):
-	
+
 			if not ptag in CONF_DICOM_PRIVATEDICT['Tags']:
 				raise ConfigurationError(('Invalid configuration. Private tag "%s" included in PrivateMainDicomTags which is not '
 					+ 'registered in the Orthanc Dictionary. Please refer to: https://oak-tree.tech/blog/soandor-orthanc-private-headers')
@@ -344,7 +205,7 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 			if rtype in IMAGING_SERVER_RESOURCE_SUPPORTED:
 
 				for dtags in rdatetime_tags:
-					dtags = list(dtags.split(','))					
+					dtags = list(dtags.split(','))
 
 					# Only a single tag defined (assume to be a date tag), add a "blank" string for the time
 					if len(dtags) == 1:
@@ -369,6 +230,7 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 							SONADOR_CONF_DATETIME_TAGS, dtmeta.time_tag, dtmeta.resource,
 						))
 
+
 		# Enable DICOMweb endpoint overrides
 		if CONF_DICOMWEB and CONF_DICOMWEB.get('Enable'):
 
@@ -377,13 +239,18 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 			# Initialize cached DICOMweb study list endpoint
 			sonador_dicomweb.init_cached_endpoints(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
 			sonador_dicomweb.init_ext_endpoints(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
+			sonador_dicomweb.init_auth_endpoints(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
+			sonador_dicomweb.init_distortionfilter_endpoints(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
+			sonador_dicomweb.init_worklist_endpints(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
+
+
 
 		# Cache Query Endpoints
 		from sonador_orthanc.web.patient import CachePatientQueryView, SonadorPatientResourceView
 		from sonador_orthanc.web.study import CacheStudyQueryView, SonadorStudyResourceView
 		from sonador_orthanc.web.series import CacheSeriesQueryView, SonadorSeriesResourceView
-		from sonador_orthanc.web.comments import CommentSeriesManagementView, CommentSeriesRestView
-		
+		from sonador_orthanc.web.secure_search import SecureToolsFindView
+
 		orthanc.RegisterRestCallback('/cache/patients', CachePatientQueryView.as_view(
 			sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS, dcm_privatetags=CONF_DICOM_PRIVATETAGS,
 			dcm_datetags=CONF_DICOM_DATETIME_TAGS))
@@ -396,17 +263,58 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 
 		# Cache overrides of patient, study, and series
 		orthanc.RegisterRestCallback(r'/patients/([0-9a-fA-F]{8}\-?){5}',
-			SonadorPatientResourceView.as_view(sessionmaker=OrthancSession))
+			SonadorPatientResourceView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
 		orthanc.RegisterRestCallback(r'/studies/([0-9a-fA-F]{8}\-?){5}',
-			SonadorStudyResourceView.as_view(sessionmaker=OrthancSession))
+			SonadorStudyResourceView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
 		orthanc.RegisterRestCallback(r'/series/([0-9a-fA-F]{8}\-?){5}',
-			SonadorSeriesResourceView.as_view(sessionmaker=OrthancSession))
-		
-		# Callback for comments and individual comment
+			SonadorSeriesResourceView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
+
+		# Cache override of /tools/find
+		orthanc.RegisterRestCallback(r'/tools/secure-find', SecureToolsFindView.as_view(
+			sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS,
+			dcm_privatetags=CONF_DICOM_PRIVATETAGS, dcm_datetags=CONF_DICOM_DATETIME_TAGS))
+
+
+		# Comments
+		from sonador_orthanc.web.comments import CommentSeriesManagementView, CommentSeriesRestView, CommentStudyManagementView, CommentStudyRestView
+
 		orthanc.RegisterRestCallback(r'/series/([0-9a-fA-F]{8}\-?){5}/comments',
-			CommentSeriesManagementView.as_view(sessionmaker=OrthancSession))
+			CommentSeriesManagementView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
 		orthanc.RegisterRestCallback(r'/series/([0-9a-fA-F]{8}\-?){5}/comments/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
-			CommentSeriesRestView.as_view(sessionmaker=OrthancSession))
+			CommentSeriesRestView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
+		orthanc.RegisterRestCallback(r'/studies/([0-9a-fA-F]{8}\-?){5}/comments',
+			CommentStudyManagementView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
+		orthanc.RegisterRestCallback(r'/studies/([0-9a-fA-F]{8}\-?){5}/comments/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
+			CommentStudyRestView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
+
+		
+		# Distortion filter
+		from sonador_orthanc.web.distortionfilter import DistortionFilterDeviceManagementView, DistortionFilterDeviceRestView, DistortionFilterView
+
+		orthanc.RegisterRestCallback(r'/distortion-filter/devices',
+			DistortionFilterDeviceManagementView.as_view(sessionmaker=OrthancSession))
+		orthanc.RegisterRestCallback(r'/distortion-filter/devices/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
+			DistortionFilterDeviceRestView.as_view(sessionmaker=OrthancSession))
+		orthanc.RegisterRestCallback(r'/distortion-filter/([0-9a-fA-F]{8}\-?){5}',
+			DistortionFilterView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
+  
+		# Tags
+		from sonador_orthanc.web.tag import TagItemManagementView, TagItemRestView
+  
+		orthanc.RegisterRestCallback(r'/groups/[0-9]+/tags',
+			TagItemManagementView.as_view(sessionmaker=OrthancSession, sonador_manager=ORTHANC_SONADOR_MANAGER))
+		orthanc.RegisterRestCallback(r'/groups/[0-9]+/tags/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
+			TagItemRestView.as_view(sessionmaker=OrthancSession, sonador_manager=ORTHANC_SONADOR_MANAGER))
+
+		
+		# Sonador authentication and access control endpoints
+		from sonador_orthanc import auth as sonador_auth
+		sonador_auth.init_auth(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
+
+
+		# Sonador worklists
+		from sonador_orthanc import worklist as sonador_worklist
+		sonador_worklist.init_reviewer_worklist(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
 
 
 		# Cache C-FIND handlers
@@ -415,12 +323,17 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 		orthanc.RegisterFindCallback(DicomCacheCFindCallback.as_callback(
 			sessionmaker=OrthancSession, cache_dicomtags=CACHE_DICOMTAGS))
 
-		# Cache Bulk Content Endpoints
-		from sonador_orthanc.web.bulk import CacheFetchBulkContentView
+		# Bulk Content Endpoints
+		from sonador_orthanc.web.bulk import CacheFetchBulkContentView, SecureCacheFetchBulkContentView
 
+		# DEPRECATED: Cache Bulk Content Endpoint (Requires admin access)
 		orthanc.RegisterRestCallback(
 			'/cache/tools/bulk-content', CacheFetchBulkContentView.as_view(sessionmaker=OrthancSession))
 
+		# ACL mediated bulk content endpoint (Generally available, access mediated via ACL policy)
+		orthanc.RegisterRestCallback(
+			'/tools/bulk-content', SecureCacheFetchBulkContentView.as_view(
+				sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
 
 		# Initialize thread pool for index operations
 		from concurrent.futures import ThreadPoolExecutor as ThreadPool
@@ -428,7 +341,7 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 		CACHE_WORKERS = CONF_SONADOR_CACHE.get('CacheThreadsCount', 4)
 		tpool = ThreadPool(max_workers=CACHE_WORKERS)
 
-		
+
 		# Cache maintenance endpoints
 		import sonador_orthanc.web.cache as sonador_cache
 		orthanc.LogWarning('Register Sonador Resource Cache endpoints')
@@ -444,7 +357,7 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 
 		# Bulk index of patients, studies, series
 		orthanc.RegisterRestCallback('/cache/admin/index/patients', sonador_cache.CacheBulkIndexPatientView.as_view(
-			sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession, threadpool=tpool, 
+			sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession, threadpool=tpool,
 			dcm_privatetags=CONF_DICOM_PRIVATETAGS, dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 		orthanc.RegisterRestCallback('/cache/admin/index/studies', sonador_cache.CacheBulkIndexStudyView.as_view(
 			sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession, threadpool=tpool,
@@ -455,15 +368,15 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 
 		# Individual index of patients, studies, series
 		orthanc.RegisterRestCallback(
-			r'/cache/patients/([0-9a-fA-F]{8}\-?){5}/index', 
+			r'/cache/patients/([0-9a-fA-F]{8}\-?){5}/index',
 			sonador_cache.CacheIndexResourceView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession,
 				resource_cachemodel=sonador_cachedb.CachePatient, dcm_privatetags=CONF_DICOM_PRIVATETAGS, dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 		orthanc.RegisterRestCallback(
-			r'/cache/studies/([0-9a-fA-F]{8}\-?){5}/index', 
+			r'/cache/studies/([0-9a-fA-F]{8}\-?){5}/index',
 			sonador_cache.CacheIndexResourceView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession,
 				resource_cachemodel=sonador_cachedb.CacheStudy, dcm_privatetags=CONF_DICOM_PRIVATETAGS, dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 		orthanc.RegisterRestCallback(
-			r'/cache/series/([0-9a-fA-F]{8}\-?){5}/index', 
+			r'/cache/series/([0-9a-fA-F]{8}\-?){5}/index',
 			sonador_cache.CacheIndexResourceView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession,
 				resource_cachemodel=sonador_cachedb.CacheSeries, dcm_privatetags=CONF_DICOM_PRIVATETAGS, dcm_datetags=CONF_DICOM_DATETIME_TAGS))
 
@@ -486,7 +399,7 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 		# Cache indexing tasks
 
 		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
-			orthanc.ChangeType.NEW_PATIENT, 
+			orthanc.ChangeType.NEW_PATIENT,
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cache_maintenance.cache_index_patient, link=False,
 				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_PATIENT, []),
@@ -509,7 +422,7 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 				ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cachedb.CachePatient))
 
 		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
-			orthanc.ChangeType.NEW_STUDY, 
+			orthanc.ChangeType.NEW_STUDY,
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cache_maintenance.cache_index_study, link=False,
 				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_STUDY, []),
@@ -530,9 +443,9 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 			SONADOR_RESOURCE_DELETE_STUDY,
 			sonador_cache_maintenance.remove_cache_serverchange_callback(
 				ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cachedb.CacheStudy))
-		
+
 		ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
-			orthanc.ChangeType.NEW_SERIES, 
+			orthanc.ChangeType.NEW_SERIES,
 			sonador_cache_maintenance.cache_index_serverchange_callback(
 				ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cache_maintenance.cache_index_series, link=False,
 				dcm_privatetags=CONF_DICOM_PRIVATETAGS.get(IMAGING_SERVER_RESOURCE_SERIES, []),
@@ -554,24 +467,13 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 			sonador_cache_maintenance.remove_cache_serverchange_callback(
 				ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cachedb.CacheSeries))
 
+		# Initialize DICOM-SR meta parsing
+		from sonador_orthanc.tasks import tags as dcmsr_tags
+		dcmsr_tags.init_dcmsr_comment_parsing(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
+
 
 	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 		orthanc.ChangeType.ORTHANC_STARTED, orthanc_cache_onstart)
-
-
-	def orthanc_worklist_onstart(changeType, level, resource):
-		'''	Initialize Orthanc worklist models, endpoints, and scheduled tasks
-		'''
-		from sonador_orthanc.worklist.web import ProcedureStepManagementView
-
-		logger.critical('Enable worklist management view')
-
-		orthanc.RegisterRestCallback(
-			'/sonador/worklist', ProcedureStepManagementView.as_view(sessionmaker=OrthancSession))
-
-
-	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
-		orthanc.ChangeType.ORTHANC_STARTED, orthanc_worklist_onstart)
 
 
 	def orthanc_sysinfo_onstart(changeType, level, resource):
@@ -580,13 +482,13 @@ if CONF_POSTGRESQL and CONF_POSTGRESQL.get('EnableIndex'):
 		from sonador_orthanc.web.system import SonadorOrthancSystemReportView, SonadorOrthancSystemStatusView, \
 			SonadorOrthancDicomTagsView
 
-		logger.critical('Enable Sonador/Orthanc system views')
+		orthanc.LogWarning('Enable Sonador/Orthanc system views')
 
 		orthanc.RegisterRestCallback(
 			'/system', SonadorOrthancSystemReportView.as_view(orthanc_conf=CONF, servermanager=ORTHANC_SONADOR_MANAGER))
 		orthanc.RegisterRestCallback('/system/status', SonadorOrthancSystemStatusView.as_view(
 				servermanager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
-		orthanc.RegisterRestCallback('/cache/dcm-tags', SonadorOrthancDicomTagsView.as_view(
+		orthanc.RegisterRestCallback(SONADOR_CACHE_TAGS_URL, SonadorOrthancDicomTagsView.as_view(
 			servermanager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
 
 

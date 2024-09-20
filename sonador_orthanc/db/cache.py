@@ -127,6 +127,18 @@ class CacheResourceMixin(CacheResourceDbPropertiesMixin):
 		'''	Date/time extension model associated with the resource
 		'''
 
+	@classproperty
+	@abc.abstractmethod
+	def group_acl_model(cls):
+		'''	Database model associated with group ACL policies
+		'''
+
+	@classproperty
+	@abc.abstractmethod
+	def user_acl_model(cls):
+		'''	Database model associated with user ACL policies
+		'''
+
 	@classmethod
 	@abc.abstractmethod
 	def _get_dcmtags(cls, rinstance):
@@ -136,12 +148,12 @@ class CacheResourceMixin(CacheResourceDbPropertiesMixin):
 		'''
 
 	@classmethod
-	def _get_dcmdatetags(cls, 
-			instance: Union[ImagingPatient, ImagingStudy, ImagingSeries], 
+	def _get_dcmdatetags(cls,
+			instance: Union[ImagingPatient, ImagingStudy, ImagingSeries],
 			dcm_datetags: Sequence[DicomDatetimePairKey], dcache=None,**kwargs):
 		''' Retrieve the provided date/time tags from the instance.
 
-			@input instance (ImagingPatient, ImagingStudy, or ImagingSeries instance): instance from 
+			@input instance (ImagingPatient, ImagingStudy, or ImagingSeries instance): instance from
 				which the data should be taken.
 			@input dcm_datetimes (iterable of DicomDatetimePairKey instances): header values
 				to retrieve from the instance.
@@ -151,14 +163,14 @@ class CacheResourceMixin(CacheResourceDbPropertiesMixin):
 		'''
 		dcache = dcache or OrderedDict()
 
-		# Retrieve date/time tags 
+		# Retrieve date/time tags
 		for dmeta in dcm_datetags:
 
 			# Omit pairs for which the date tag is not defined
 			if instance.dicomdata.get(dmeta.date_tag):
 				dcache[dmeta] = DicomDatetimePair(
 					instance.dicomdata.get(dmeta.date_tag), instance.dicomdata.get(dmeta.time_tag), meta=dmeta)
-				
+
 		return dcache
 
 	@classmethod
@@ -182,6 +194,11 @@ class CachePatient(CacheResourceMixin, DbBase):
 	timestamp_tags = relationship('CachePatientDatetime', overlaps='patient,timestamp_tags', back_populates='patient',
 		primaryjoin='CachePatient.uid == foreign(CachePatientDatetime.uid)', viewonly=True)
 
+	auth_user = relationship('UserPatientAuth', overlaps='patient,auth_user', back_populates='patient',
+		primaryjoin='CachePatient.uid == foreign(UserPatientAuth.resource)', viewonly=True)
+	auth_group = relationship('GroupPatientAuth', overlaps='patient,auth_group', back_populates='patient',
+		primaryjoin='CachePatient.uid == foreign(GroupPatientAuth.resource)', viewonly=True)
+
 	@classproperty
 	def type(cls):
 		return IMAGING_SERVER_RESOURCE_PATIENT
@@ -202,6 +219,16 @@ class CachePatient(CacheResourceMixin, DbBase):
 		'''
 		from .dcmext import CachePatientDatetime
 		return CachePatientDatetime
+
+	@classproperty
+	def group_acl_model(self):
+		from .auth import GroupPatientAuth
+		return GroupPatientAuth
+
+	@classproperty
+	def user_acl_model(cls):
+		from .auth import UserPatientAuth
+		return UserPatientAuth
 
 	@classmethod
 	def _get_dcmtags(cls, instance, study_idx=0, series_idx=0, dcm_idx=0):
@@ -243,7 +270,7 @@ class CachePatient(CacheResourceMixin, DbBase):
 			session.add(pci)
 
 		# Created indexed copies of date/time tags
-		if dcm_datetags:			
+		if dcm_datetags:
 			for dcm_datetag_val in cls._get_dcmdatetags(instance, dcm_datetags=dcm_datetags).values():
 				dci = cls._init_dcmdatetag(
 					cls.datetime_resource_model, session, instance, dcm_datetag_val)
@@ -267,7 +294,7 @@ class CacheStudy(CacheResourceMixin, DbBase):
 	parent_id = Column(
 		SqlString(64), ForeignKey('sonador_cache_patient.uid', ondelete='CASCADE'), nullable=True)
 	parent = relationship('CachePatient', overlaps='parent,studies_collection', viewonly=True)
-	
+
 	series_collection = relationship(
 		'CacheSeries', back_populates='parent', overlaps='parent,series_collection', viewonly=True)
 
@@ -275,6 +302,20 @@ class CacheStudy(CacheResourceMixin, DbBase):
 		primaryjoin='CacheStudy.uid == foreign(CacheStudyPrivateTags.uid)', viewonly=True, uselist=False)
 	timestamp_tags = relationship('CacheStudyDatetime', overlaps='study,timestamp_tags', back_populates='study',
 		primaryjoin='CacheStudy.uid == foreign(CacheStudyDatetime.uid)', viewonly=True)
+	
+	worklist_reviewer = relationship('StudyReviewerWorklistItem', overlaps='study,worklist_reviewer', back_populates='study',
+		primaryjoin='CacheStudy.uid == foreign(StudyReviewerWorklistItem.resource)', viewonly=True)
+
+	comments = relationship('ImagingStudyComment', overlaps='study,comments', back_populates='study',
+		primaryjoin='CacheStudy.uid == foreign(ImagingStudyComment.study_id)', viewonly=True)
+
+	worklist_reviewer = relationship('StudyReviewerWorklistItem', overlaps='study,worklist_reviewer', back_populates='study',
+		primaryjoin='CacheStudy.uid == foreign(StudyReviewerWorklistItem.resource)', viewonly=True)
+
+	auth_user = relationship('UserStudyAuth', overlaps='study,auth_user', back_populates='study',
+		primaryjoin='CacheStudy.uid == foreign(UserStudyAuth.resource)', viewonly=True)
+	auth_group = relationship('GroupStudyAuth', overlaps='study,auth_group', back_populates='study',
+		primaryjoin='CacheStudy.uid == foreign(GroupStudyAuth.resource)', viewonly=True)
 
 	@classproperty
 	def type(cls):
@@ -297,6 +338,21 @@ class CacheStudy(CacheResourceMixin, DbBase):
 		from .dcmext import CacheStudyDatetime
 		return CacheStudyDatetime
 
+	@classproperty
+	def group_acl_model(self):
+		from .auth import GroupStudyAuth
+		return GroupStudyAuth
+
+	@classproperty
+	def user_acl_model(cls):
+		from .auth import UserStudyAuth
+		return UserStudyAuth
+
+	@classproperty
+	def worklist_reviewer_model(cls):
+		from .worklist import StudyReviewerWorklistItem
+		return StudyReviewerWorklistItem
+
 	@classmethod
 	def _get_dcmtags(cls, instance, series_idx=0, dcm_idx=0):
 		'''	Retrieve DICOM tags from specified instance for study
@@ -307,7 +363,7 @@ class CacheStudy(CacheResourceMixin, DbBase):
 		if not len(instance.series_collection):
 			raise ValueError('Unable to retrieve DICOM tags, study=%s has no child series.' % instance.pk)
 
-		sx = instance.series_collection[series_idx]		
+		sx = instance.series_collection[series_idx]
 		if not len(sx.slices_collection):
 			raise ValueError('Unable to retrieve DICOM tags, study=%s series=%s has no child instances.'
 				% (instance.pk, sx.pk))
@@ -316,7 +372,7 @@ class CacheStudy(CacheResourceMixin, DbBase):
 		return dcm0.tags
 
 	@classmethod
-	def index(cls, session, instance: ImagingStudy, 
+	def index(cls, session, instance: ImagingStudy,
 			link=True, commit=True, dcm_privatetags=None, dcm_datetags=None, **kwargs):
 		'''	Initialize a copy of the study in the index
 		'''
@@ -359,13 +415,19 @@ class CacheSeries(CacheResourceMixin, DbBase):
 	parent_id = Column(
 		SqlString(64), ForeignKey('sonador_cache_study.uid', ondelete='CASCADE'), nullable=True)
 	parent = relationship('CacheStudy', overlaps='series_collection,parent', viewonly=True)
-	
+
 	privatetags = relationship('CacheSeriesPrivateTags', overlaps='series,privatetags', back_populates='series',
 		primaryjoin='CacheSeries.uid == foreign(CacheSeriesPrivateTags.uid)', viewonly=True, uselist=False)
 	timestamp_tags = relationship('CacheSeriesDatetime', overlaps='series,timestamp_tags', back_populates='series',
 		primaryjoin='CacheSeries.uid == foreign(CacheSeriesDatetime.uid)', viewonly=True)
+	
 	comments = relationship('ImagingSeriesComment', overlaps='series,comments', back_populates='series',
 		primaryjoin='CacheSeries.uid == foreign(ImagingSeriesComment.series_id)', viewonly=True)
+	
+	auth_user = relationship('UserSeriesAuth', overlaps='series,auth_user', back_populates='series',
+		primaryjoin='CacheSeries.uid == foreign(UserSeriesAuth.resource)', viewonly=True)
+	auth_group = relationship('GroupSeriesAuth', overlaps='series,auth_group', back_populates='series',
+		primaryjoin='CacheSeries.uid == foreign(GroupSeriesAuth.resource)', viewonly=True)
 
 	@classproperty
 	def type(cls):
@@ -393,6 +455,16 @@ class CacheSeries(CacheResourceMixin, DbBase):
 		from .comments import ImagingSeriesComment
 		return ImagingSeriesComment
 
+	@classproperty
+	def group_acl_model(self):
+		from .auth import GroupSeriesAuth
+		return GroupSeriesAuth
+
+	@classproperty
+	def user_acl_model(cls):
+		from .auth import UserSeriesAuth
+		return UserSeriesAuth
+
 	@classmethod
 	def _get_dcmtags(cls, instance, dcm_idx=0):
 		'''	Retrieve DICOM tags from specified instance for series
@@ -406,7 +478,7 @@ class CacheSeries(CacheResourceMixin, DbBase):
 		return dcm0.tags
 
 	@classmethod
-	def index(cls, session, instance: ImagingSeries, 
+	def index(cls, session, instance: ImagingSeries,
 			link=True, commit=True, dcm_privatetags=None, dcm_datetags=None, **kwargs):
 		'''	Initialize a copy of the series in the index
 		'''
@@ -425,7 +497,7 @@ class CacheSeries(CacheResourceMixin, DbBase):
 			session.add(pci)
 
 		# Created indexed copies of date/time tags
-		if dcm_datetags:			
+		if dcm_datetags:
 			for dcm_datetag_val in cls._get_dcmdatetags(instance, dcm_datetags=dcm_datetags).values():
 				dci = cls._init_dcmdatetag(
 					cls.datetime_resource_model, session, instance, dcm_datetag_val)

@@ -6,6 +6,7 @@ from .base import AutoDbBase
 ORTHANCDB_PATIENT_TYPE = 0
 ORTHANCDB_STUDY_TYPE = 1
 ORTHANCDB_SERIES_TYPE = 2
+ORTHANCDB_INSTANCE_TYPE = 3
 
 
 class Resource(AutoDbBase):
