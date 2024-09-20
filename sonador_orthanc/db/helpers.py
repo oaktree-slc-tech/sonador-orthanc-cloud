@@ -1,10 +1,15 @@
-import copy, re, fnmatch, logging
+import copy, re, fnmatch, logging, datetime
+
+from client.utils.object import pick
 
 from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, \
-	IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_IMAGE, \
+	IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_IMAGE, IMAGING_SERVER_MODIFIED, IMAGING_SERVER_LAST_UPDATE,  \
+	DCMHEADER_INSTITUTION_NAME, DCMHEADER_MANUFACTURER, DCMHEADER_MANUFACTER_MODEL_NAME, DCMHEADER_SOFTWARE_VERSIONS, \
 	DCMHEADER_MODALITIES_IN_STUDY, DCM_QUERY_NULL, DCM_QUERY_NOT_NULL, \
-	IMAGING_SERVER_MAINDICOM, IMAGING_SERVER_PATIENT_MAINDICOM, IMAGING_SERVER_LAST_UPDATE, IMAGING_SERVER_STABLE, \
-	IMAGING_SERVER_PARENT_PATIENT, IMAGING_SERVER_PARENT_STUDY
+	IMAGING_SERVER_MAINDICOM, IMAGING_SERVER_PATIENT_MAINDICOM, IMAGING_SERVER_STABLE, \
+	IMAGING_SERVER_PARENT_PATIENT, IMAGING_SERVER_PARENT_STUDY, IMAGING_SERVER_DCM_TAG, IMAGING_SERVER_DCM_TAG_VALUE
+
+from .. import apisettings as sonador_api
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +20,7 @@ logger = logging.getLogger(__name__)
 # https://www.postgresql.org/docs/9.3/functions-matching.html#POSIX-EMBEDDED-OPTIONS-TABLE.
 PSQL_REGEX_TRANSFORMS = (
 	(r'(?<!\\)\(', r'\('), # Escape parentheses
-	(r'(?<!\\)\)', r'\)'), 
+	(r'(?<!\\)\)', r'\)'),
 	(r'(?<!\\)\*', '%*'), # Replace '*' (wildcard), with '%*' (PostgreSQL operator for any character)
 )
 
@@ -79,7 +84,7 @@ def cache_orthanc_patientjson(cpatient, resource_type=None):
 
 
 def cache_orthanc_studyjson(cstudy, resource_type=None):
-	'''	Create Orthanc JSON structure for the provided cache study. 
+	'''	Create Orthanc JSON structure for the provided cache study.
 	'''
 	if getattr(cstudy, 'privatetags', None):
 		dcmtags_main = copy.deepcopy(cstudy.orthanc)
@@ -125,13 +130,127 @@ def cache_orthanc_seriesjson(cseries, resource_type=None):
 	return dcm
 
 
-def orthanc_commentjson(comment):
+def orthanc_commentjson(comment, user=None, user_attrs=sonador_api.SONADOR_USER_ATTRS_DEFAULT):
 	'''	Create Orthanc JSONn structure for the provided comment.
 	'''
-	return {
+	_json = {
 		'ID': comment.uid,
-		IMAGING_SERVER_RESOURCE_SERIES: comment.series_id,
+		comment.resource_cachemodel.type: getattr(comment, comment.resource_foreignkey_attr),
 		'Created': comment.ctime,
 		IMAGING_SERVER_LAST_UPDATE: comment.mtime,
 		'Text': comment.text,
 	}
+	if user:
+		_json['User'] = pick(user, user_attrs)
+	if comment.orthanc:
+		_json['Meta'] = comment.orthanc
+
+	return _json
+	
+
+def orthanc_devicejson(device):
+	'''	Create Orthanc JSON structure for the provided device.
+	'''
+	return {
+		'ID': device.uid,
+		'Created': device.ctime,
+		IMAGING_SERVER_MODIFIED: device.mtime,
+		DCMHEADER_INSTITUTION_NAME: device.institution_name,
+		DCMHEADER_MANUFACTURER: device.manufacturer,
+		DCMHEADER_MANUFACTER_MODEL_NAME: device.manufacturer_modelname,
+		DCMHEADER_SOFTWARE_VERSIONS: device.software_versions,
+		IMAGING_SERVER_DCM_TAG: device.dcm_tag_name,
+		IMAGING_SERVER_DCM_TAG_VALUE: device.dcm_tag_value,
+	}
+
+def orthanc_tagjson(tag, group=None, group_attrs=sonador_api.SONADOR_GROUP_ATTRS_DEFAULT):
+	'''	Create Orthanc JSON structure for tags.
+	'''
+	_json = {
+		'ID': tag.uid,
+		'Value': tag.value,
+		'SchemeDesignator': tag.scheme_designator,
+		'Meaning': tag.meaning,
+	}
+	
+	if tag.scheme_version:
+		_json['SchemeVersion'] = tag.scheme_version
+	if group:
+		_json['Group'] = pick(group, group_attrs)
+  
+	return _json
+
+
+def orthanc_worklist_studyjson(worklist, user=None, user_attrs=sonador_api.SONADOR_USER_ATTRS_DEFAULT, 
+		group=None, group_attrs=sonador_api.SONADOR_GROUP_ATTRS_DEFAULT):
+	'''	Create Orthanc JSONn structure for the provided worklist assigned to study.
+	'''
+	_json = {
+		'ID': worklist.uid,
+		IMAGING_SERVER_RESOURCE_STUDY: worklist.resource,
+		'Created': worklist.ctime,
+		IMAGING_SERVER_LAST_UPDATE: worklist.mtime,
+		'State': worklist.state,
+		'Group': worklist.group,
+		'User': worklist.user
+	}
+
+	# Add metadata properties
+	if worklist.orthanc:
+		_json['Meta'] = worklist.orthanc
+
+	# Add user and group attributes to response
+	if user:
+		_json['User'] = pick(user, user_attrs)
+	if group:
+		_json['Group'] = pick(group, group_attrs)
+
+	return _json
+
+
+def orthanc_auth_resourcejson(auth, attrs=sonador_api.SONADOR_ACL_ATTRS_DEFAULT, 
+		user=None, user_attrs=sonador_api.SONADOR_USER_ATTRS_DEFAULT,
+		group=None, group_attrs=sonador_api.SONADOR_GROUP_ATTRS_DEFAULT):
+	'''	Create Orthanc JSON structure for the provided resources auth permissions for Users/Groups.
+		Returns appropriate json based on input.
+	'''
+	# Retrieve attributes from model
+	_adata = pick(auth, attrs)
+	_adata['ID'] = auth.uid
+	_adata[auth.resource_cachemodel.type] = auth.resource
+
+	# Create Orthanc style API keys
+	for k in attrs:
+		v = _adata.pop(k, None)
+
+		# Key transforms
+		if 'acl' in k: k = k.upper()
+		elif '_' in k: k = ''.join(s.title() for s in k.split('_'))
+		else: k = k.title()
+
+		if v is not None:
+			_adata[k] = v
+
+	if user:
+		_adata['User'] = pick(user, user_attrs)
+	elif group:
+		_adata['Group'] = pick(group, group_attrs)
+
+	# Timestamps
+	_adata['Created'] = auth.ctime
+	_adata[IMAGING_SERVER_LAST_UPDATE] = auth.mtime
+
+	return _adata
+
+
+def set_ctime(mapper, connection, target):
+	'''	Set creation time for the provided model instance
+	'''
+	target.ctime = target.mtime = datetime.datetime.utcnow()
+
+
+def set_mtime(mapper, connection, target):
+	'''	Set the modification time for the provied model instance
+	'''
+	target.mtime = datetime.datetime.utcnow()
+	

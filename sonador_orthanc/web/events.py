@@ -56,7 +56,6 @@ class OrthancEventView(OrthancBaseView):
 			gcapicodes.STATUS: gcapicodes.SUCCESS,
 		}))
 
-
 	def delete(self, output, uri, request):
 		''' Trigger delete event
 		'''

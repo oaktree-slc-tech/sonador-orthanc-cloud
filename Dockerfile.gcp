@@ -1,4 +1,4 @@
-FROM osimis/orthanc:23.11.1-full
+FROM orthancteam/orthanc:24.2.3-full
 
 # The Osimis "full" image contains all cloud storage plugins along
 ARG CI_COMMIT_SHA
@@ -7,7 +7,7 @@ ARG CLI_CI_COMMIT_SHA
 # Install Python Requests Module
 RUN apt-get update && apt-get install -y python3-requests libtiff5-dev libjpeg-dev zlib1g-dev \
   libfreetype6-dev liblcms2-dev libwebp-dev libharfbuzz-dev libfribidi-dev \
-  tcl8.6-dev tk8.6-dev python3-tk git librdkafka-dev
+  tcl8.6-dev tk8.6-dev python3-tk git librdkafka-dev libpq-dev
 
 # Install Sonador Python Plugin
 RUN mkdir -p /opt/orthanc/

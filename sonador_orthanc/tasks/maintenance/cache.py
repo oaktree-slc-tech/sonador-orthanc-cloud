@@ -222,6 +222,17 @@ def remove_cache_resource(sonador_manager: SonadorServerManager, sessionmaker, c
 					}):
 					session.delete(c)
 
+			# Remove access control lists: group and user models
+			for acl_model in (cachemodel.group_acl_model, cachemodel.user_acl_model):
+
+				for acl in session.query(acl_model).filter_by(resource=resource):
+					session.delete(acl)
+
+			# Remove worklists
+			if hasattr(cachemodel, 'worklist_reviewer_model'):
+				for w in session.query(cachemodel.worklist_reviewer_model).filter_by(**{ 'resource': resource }):
+					session.delete(w)
+
 			# Commit changes to database
 			if commit:
 				session.commit()

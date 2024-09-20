@@ -80,6 +80,7 @@ class CachePatientQueryView(CachePatientListBaseView):
 	def post(self, output, uri, request):
 		'''	Return list of patients which match the request parameters
 		'''
+		print("PATIENT POST", output, uri, request)
 		try:
 			with self.sessionmaker() as session:
 
@@ -114,3 +115,8 @@ class SonadorPatientResourceView(SonadorResourceBaseView):
 	'''
 	resource_base = 'patients'
 	resource_cachemodel = CachePatient
+
+	def orthanc_json_extended_attrs(self, response, session=None, resource=None, **kwargs):
+		'''	Add additional parameters to the response, based on request options
+		'''
+		return response

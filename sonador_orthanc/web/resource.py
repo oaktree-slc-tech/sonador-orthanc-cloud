@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 class SonadorResourceBaseView(ResourceBaseMixin, OrthancBaseView):
 	''' View instance which can be used to work with Orthanc resources.
 	'''
+	sonador_manager = None
 	resource_base = None
 	sessionmaker = None
 	resource_cachemodel = None
@@ -24,6 +25,9 @@ class SonadorResourceBaseView(ResourceBaseMixin, OrthancBaseView):
 	def setup(self, output, uri, request, *args, **kwargs):
 		''' Parse request options
 		'''
+		if not self.sonador_manager:
+			raise ConfigurationError(
+				'Unable to initialize view %s, invalid Sonador manager instance' % type(self).__name__)
 		if not self.resource_base:
 			raise ConfigurationError('Unable to initialize view %s, invalid resource endpoint' % type(self).__name__)
 		if not self.resource_cachemodel:
@@ -53,7 +57,14 @@ class SonadorResourceBaseView(ResourceBaseMixin, OrthancBaseView):
 		rp = session.query(self.resource_cachemodel.privatetags_resource_model).get(resource.publicid)
 		if rp: response['MainDicomTags'].update(rp.orthanc)
 		
+		# Add extended JSON attributes
+		self.orthanc_json_extended_attrs(response, session=session, resource=resource, **kwargs)
 		return response
+
+	@abc.abstractmethod
+	def orthanc_json_extended_attrs(self, response, session=None, resource=None, **kwargs):
+		'''	Add additional paramters to JSON response, based on request options
+		'''
 
 	def delete_resource(self, session, resource, *args, response=None, **kwargs):
 		'''	Delete resource instance

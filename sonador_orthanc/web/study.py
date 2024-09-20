@@ -9,16 +9,18 @@ from client.errors import ConfigurationError
 from client.utils.object import omit, pick
 
 from sonador.apisettings import \
-	IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES,  \
-	IMAGING_SERVER_LAST_UPDATE, IMAGING_SERVER_MODIFIED, \
+	IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_SUPPORTED,  \
+	IMAGING_SERVER_LAST_UPDATE, IMAGING_SERVER_MODIFIED, IMAGING_SERVER_MAINDICOM, IMAGING_SERVER_REQUESTED_TAGS, \
 	DCMHEADER_MODALITIES_IN_STUDY, DCMHEADER_PATIENT_BIRTHDATE, DCMHEADER_MODALITY, DCMHEADER_STUDY_DATE, DCMHEADER_SERIES_DATE
 from sonador.imaging.helpers.conversion import json2dcmjson
 from sonador.serialization import dcm_str2date, SonadorJsonEncoder
 
+from sonador_orthanc_common.apisettings import ORTHANC_API_REQUESTED_TAGS_QUERY_PARAM, ORTHANC_API_REQUESTED_TAGS_QUERY_PARAM_SEP
 from sonador_orthanc_common.servers import ResponseLikeObject, local_orthanc_apiurl
 
 from ..apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, ORTHANC_CONFIG_SECTION_POSTGRES, \
-	ORTHANC_CONFIG_SECTION_EXTRADICOMTAGS, ORTHANC_MAINDICOM_TAGS_DEFAULT, SONADOR_CACHE_ORDER_BY
+	ORTHANC_CONFIG_SECTION_EXTRADICOMTAGS, ORTHANC_MAINDICOM_TAGS_DEFAULT, SONADOR_CACHE_ORDER_BY, \
+	SONADOR_CACHE_TAGS_URL
 from ..db.cache import CachePatient, CacheStudy, CacheSeries
 from ..db.helpers import cache_orthanc_studyjson
 from ..dcmquery import CacheStudyQueryMixin
@@ -37,6 +39,8 @@ class CacheStudyListBaseView(CacheStudyQueryMixin, DicomQueryBaseView):
 		self._init_studyquery(output, uri, request, *args, **kwargs)
 
 	def apply_session_options(self, session, basequery, *args, **kwargs):
+		'''	Fetch study parent (patient) via joinedload
+		'''
 		return basequery.options(joinedload(self.resource_model.parent))
 
 
@@ -50,10 +54,10 @@ class CacheStudyQueryView(CacheStudyListBaseView):
 		request = request or {}
 		self.POST = json.loads(request.get('body')) if request.get('body') else {}
 
-		# Retrieve query from request body, omit study and series date so that they can be 
+		# Retrieve query from request body, omit study and series date so that they can be
 		# applied using a date/time filter.
 		self.query = self.POST.get('Query', {})
-		self.dicom_query = omit(self.query, 
+		self.dicom_query = omit(self.query,
 			(DCMHEADER_PATIENT_BIRTHDATE, DCMHEADER_STUDY_DATE, DCMHEADER_SERIES_DATE, DCMHEADER_MODALITIES_IN_STUDY,
 				IMAGING_SERVER_LAST_UPDATE, IMAGING_SERVER_MODIFIED))
 
@@ -63,7 +67,7 @@ class CacheStudyQueryView(CacheStudyListBaseView):
 		self.limit = int(self.POST.get('Limit')) if self.POST.get('Limit') is not None else None
 		self.offset = int(self.POST.get('Since')) if self.POST.get('Since') is not None else None
 		self.study_modalities = self.query.get(DCMHEADER_MODALITIES_IN_STUDY)
-		self.patient_dob_filter = self.query.get(DCMHEADER_PATIENT_BIRTHDATE)	
+		self.patient_dob_filter = self.query.get(DCMHEADER_PATIENT_BIRTHDATE)
 		self.study_date_filter = self.query.get(DCMHEADER_STUDY_DATE)
 		self.series_date_filter = self.query.get(DCMHEADER_SERIES_DATE)
 		self.resource_mtime_query = self.query.get(IMAGING_SERVER_LAST_UPDATE) or self.query.get(IMAGING_SERVER_MODIFIED)
@@ -76,7 +80,7 @@ class CacheStudyQueryView(CacheStudyListBaseView):
 
 	def post(self, output, uri, request):
 		'''	Return list of studies which match the request parameters
-		'''		
+		'''
 		try:
 			with self.sessionmaker() as session:
 
@@ -86,13 +90,13 @@ class CacheStudyQueryView(CacheStudyListBaseView):
 				# Serialize results to JSON
 				return self.send_response(json.dumps(
 					[self.orthanc_studyjson(cs) for cs in self.paginate_query_results(
-						orthanc_studies, self.offset or 0, self.limit)], 
+						orthanc_studies, self.offset or 0, self.limit)],
 					cls=SonadorJsonEncoder))
 
 		except ValueError as err:
 			logger.error(
 				'Unable to execute study search due to an error. Error: "%s"\n%s' % (err, traceback.format_exc()))
-			
+
 			return self.send_response(json.dumps({
 				gcapicodes.ERROR: '%s' % err, gcapicodes.STATUS: gcapicodes.FAIL,
 			}), status_code=400)
@@ -111,3 +115,37 @@ class SonadorStudyResourceView(SonadorResourceBaseView):
 	'''
 	resource_base = 'studies'
 	resource_cachemodel = CacheStudy
+
+	def orthanc_json_extended_attrs(self, response, session=None, resource=None, **kwargs):
+		'''	Add additional parameters to the response, based on request options
+		'''
+		# Add requested DICOM tags to response. Tags are placed in RequestedTags section.
+		if self.GET.get(ORTHANC_API_REQUESTED_TAGS_QUERY_PARAM):
+			_request_tagdata = response.get(IMAGING_SERVER_REQUESTED_TAGS, {})
+
+			_requested_tags = set(
+				self.GET.get(ORTHANC_API_REQUESTED_TAGS_QUERY_PARAM).split(ORTHANC_API_REQUESTED_TAGS_QUERY_PARAM_SEP))
+			iserver = self.sonador_manager.get_internal_imageserver()
+			_dcmtags = iserver._request_get(SONADOR_CACHE_TAGS_URL,
+				'Unable to retrieve cache DICOM tags list due to an error.').json()
+
+			# TODO: Copy cached tags to response
+			for rtype in (IMAGING_SERVER_RESOURCE_SUPPORTED):
+				_rtags = set(_dcm.get('tag') for _dcm in _dcmtags.get(rtype, {}).values()).intersection(_requested_tags)
+
+			# TODO: Retrieve a complete set of the DICOM tags and copy requested headers not available in response to cache.
+
+			# Add ModalitiesInStudy to response
+			if DCMHEADER_MODALITIES_IN_STUDY in _requested_tags and not _request_tagdata.get(DCMHEADER_MODALITIES_IN_STUDY):
+				_request_tagdata[DCMHEADER_MODALITIES_IN_STUDY] = response.get(IMAGING_SERVER_MAINDICOM, {}).get(DCMHEADER_MODALITIES_IN_STUDY)
+
+				# If not already included in response, query resource from cache and add
+				if not _request_tagdata.get(DCMHEADER_MODALITIES_IN_STUDY) and resource:
+					rc = session.query(self.resource_cachemodel).get(resource.publicid)
+					if rc and rc.modalities:
+						_request_tagdata[DCMHEADER_MODALITIES_IN_STUDY] = '\\'.join(rc.modalities)
+
+			if _request_tagdata:
+				response[IMAGING_SERVER_REQUESTED_TAGS] = _request_tagdata
+
+		return response

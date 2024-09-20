@@ -1,4 +1,5 @@
 import six, os, json, logging, pprint, threading, requests, traceback, posixpath
+from typing import List
 from concurrent.futures import ThreadPoolExecutor as ThreadPool
 
 from client import apisettings as capicodes
@@ -13,6 +14,8 @@ from sonador_orthanc_common.manager import BaseServerManager, \
 	TIMER_30S, TIMER_MINUTE, TIMER_10MIN, TIMER_10MIN, TIMER_30MIN, \
 	TIMER_HOUR, TIMER_DAILY
 from sonador_orthanc_common.servers import ResponseLikeObject, OrthancInternalImagingServer
+
+from .apisettings import SONADOR_CONF_KAFKA
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,30 @@ IMAGE_SERVER_CONFIG_TRANSFORMS = {
 }
 
 
+class OrthancCloudInternalImagingServer(OrthancInternalImagingServer):
+	'''	Imaging server implementaiton which can be used within the Sonador/Orthanc cloud plugin.
+		Uses the orthanc Python package to retrieve and populate data structures and perform user/group.
+	'''
+	def admin_verify_user_credentials(self, token_key, token_value, **kwargs):
+		'''	Verify the provided token key and value using the imaging server introspection endpoint.
+			If valid, a copy of the user context will be provided for the server including the profile,
+			and the groups that have been authorized for the imaging server instance.
+
+			@returns response-like object
+		'''
+		return SonadorImagingServer.admin_verify_user_credentials(self, token_key, token_value, **kwargs)
+
+	def user_lookup(self, user_uids: List[int], **kwargs):
+		'''	Retrieve the details of the users specified in user_uids
+		'''
+		return SonadorImagingServer.user_lookup(self, user_uids, **kwargs)
+
+	def group_lookup(self, group_uids: List[int], **kwargs):
+		'''	Retrieve the details of the groups specified in group_uids
+		'''
+		return SonadorImagingServer.group_lookup(self, group_uids, **kwargs)
+
+
 class SonadorServerManager(BaseServerManager):
 	'''	Manages the integration between Sonador and Orthanc and provides methods for
 		scheduling recurring tasks, executing long-running operations, and invoking callbacks
@@ -41,7 +68,7 @@ class SonadorServerManager(BaseServerManager):
 	retry_interval = 30
 
 	def __init__(self, sonador_conn: SonadorServer, imageserver_id: str, *args, 
-			threadpool=None, timers=None, changeCallbacks=None, **kwargs):
+			threadpool=None, timers=None, changeCallbacks=None, kafka_producer=None, **kwargs):
 		'''	Initialize server manager
 		'''
 		self.imageserver_id = imageserver_id
@@ -51,6 +78,9 @@ class SonadorServerManager(BaseServerManager):
 
 		super().__init__(
 			sonador_conn, *args, threadpool=threadpool, timers=timers, changeCallbacks=changeCallbacks, **kwargs)
+
+		# Kafka producer
+		self.kafka_producer = kafka_producer
 
 	def register_server(self, *args, **kwargs):
 		''' Synchronize local server configuration with remote configuration on Sonador. If an entry
@@ -110,5 +140,5 @@ class SonadorServerManager(BaseServerManager):
 		if self.conf.get(orthancapi.ORTHANC_SONADOR_CONFIG_SERVER_NAME):
 			iserver_data['name'] = self.conf.get(orthancapi.ORTHANC_SONADOR_CONFIG_SERVER_NAME)
 
-		return self.server.get_imageserver(self.imageserver_id, imageserver_datamodel_class=OrthancInternalImagingServer,
+		return self.server.get_imageserver(self.imageserver_id, imageserver_datamodel_class=OrthancCloudInternalImagingServer,
 			fetch_callable=lambda *_a, **_ka: ResponseLikeObject(json.dumps(iserver_data)))

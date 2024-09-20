@@ -1,284 +1,234 @@
 '''	Orthanc views which help with the management of the comments table.
 '''
-import logging, json, uuid, traceback, re
+import abc, logging, json, uuid, traceback, re
 
 from pydantic import BaseModel, constr
 
 import client.apisettings as gcapicodes
-from client.errors import ConfigurationError, ResourceDoesNotExist
+from client.utils.object import pick, omit
+from client.errors import ConfigurationError, ResourceDoesNotExist, ClientOperationError
 
 from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, \
-	IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_IMAGE, DCMHEADER_SERIES_INSTANCE_UID
+	IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_IMAGE, DCMHEADER_SERIES_INSTANCE_UID, DCMHEADER_STUDY_INSTANCE_UID
 from sonador.serialization import SonadorJsonEncoder
 
-from ..db.comments import ImagingSeriesComment
+from ..db.comments import ImagingSeriesComment, ImagingStudyComment
 from ..db.helpers import orthanc_commentjson
 from ..validation import CommentValidationForm
-from ..db.cache import CacheSeries
+from ..db.cache import CacheSeries, CacheStudy
 from ..db.internal import DicomIdentifiers
 
 from .base import OrthancBaseView
 from .cache import ResourceUidMixin
-from .dicomweb import DicomResourceMixin
+from .dicomweb import DicomResourceMixin, DicomUidJsonMixin
+from .ext import ResourceChildManagementBaseView, ResourceChildBaseRestView
+from .secure_user import UserContextMixin, AdminUserLookupMixin
 
 logger = logging.getLogger(__name__)
 
 
-class CommentSeriesManagementView(ResourceUidMixin, OrthancBaseView):
-	'''	REST endpoint which can be used to get and add on to the Comments list for series
-	'''
-	sessionmaker = None
-
-	resource_cachemodel = CacheSeries
-	comment_model = ImagingSeriesComment
+class CommentBaseManagementView(AdminUserLookupMixin, UserContextMixin, ResourceChildManagementBaseView):
+	'''	 Management view which can be used to manage comments for a resource model
+	'''	
+	resource_cachemodel = None
+	model = None
 	modelform = CommentValidationForm
 
-	orthanc_commentjson = lambda _,c: orthanc_commentjson(c)
-
-	def setup(self, output, uri, request, *args, **kwargs):
-		'''	Verify that database properties, database models, and indexing method have been provided.
+	def orthanc_objectjson(self, c):
+		'''	Serialize comment to JSON, add user details to response
 		'''
-		super().setup(output, uri, request)
+		# Match comment with user data
 
-		if not callable(self.orthanc_commentjson):
-			raise ConfigurationError(
-				'Unable to initialize %s view instance: `orthanc_commentjson` is not a callable function.')
+		# Comment user is the same as the request user
+		if getattr(self, 'user', None) and self.user.pk == c.user:
+			_user = self.user
 
-		# Ensure valid session maker instance is present
-		if self.sessionmaker is None:
-			raise ConfigurationError(
-				'Unable to initialize %s view instance: invalid session maker instance' % type(self).__name__)
-		
-		# De-serialize request data and retrieve operation parameters
-		self.POST = json.loads(request.get('body')) if request.get('body') else {}
+		# User fetched as part of a lookup
+		elif getattr(self, 'user_collection', None) and self.user_collection.get_modelinstance(c.user):
+			_user = self.user_collection.get_modelinstance(c.user)
 
-		# Ensure that a resource model has been defined and an index method is available
-		self.init_resource_mixin(*args, **kwargs)
+		# Unable to locate user instance
+		else: _user = None
 
-	def get_comments(self, session, *args, ruid=None, **kwargs):
+		_json = orthanc_commentjson(c, user=_user)
+		return _json
+
+	def get_objects(self, session, *args, ruid=None, **kwargs):
 		'''	Retrieve the comment instances for the view resource
 		'''
 		ruid = ruid or self.get_resource_uid(*args, **kwargs)
-		return session.query(self.comment_model).filter_by(series_id=ruid)
+		_comments = session.query(self.model).filter_by(**{ self.model.resource_foreignkey_attr: ruid })
 
-	def get(self, output, uri, request, *args, **kwargs):
-		''' Retrieve Comments list from series
+		# Retrieve user details for the comments
+		_user_uids = set([c.user for c in _comments])
+		if _user_uids:
+			setattr(self, 'user_collection', self.sonador_user_lookup(_user_uids))
+
+		return _comments
+
+	def init_object_model(self, ruid=None, **kwargs):
+		'''	Initialize new comment model instance
 		'''
-		# Parse the resource UID from the URL
-		sid = self.get_resource_uid(*args, **kwargs)
+		ruid = ruid or self.get_resource_uid(**kwargs)
 
-		try:
-
-			# Retrieve comments for the series
-			with self.sessionmaker() as session:
-
-				# Retrieve resource model from database (checks to see if resource exists)
-				r = self.get_resource(session, *args, ruid=sid, **kwargs)
-				
-				# Query database for comments related to the current series
-				return self.send_response(json.dumps(
-					[self.orthanc_commentjson(c) for c in self.get_comments(session, ruid=sid)],
-					cls=SonadorJsonEncoder))
-
-		except ResourceDoesNotExist as err:			
-			response = {
-				gcapicodes.ERROR: 'Comments for Resource sid=%s does not exist' % sid or '(none)',
-				gcapicodes.STATUS: gcapicodes.FAIL
-			}
-
-			return self.http404_resource_not_found(response=response)
-	
-	def post(self, output, uri, request, *args, **kwargs):
-		''' Append new comment to the Comments list in series
-		'''	
-		try:
-			with self.sessionmaker() as session:
-
-				# Create comment for series
-				r = self.get_resource(session, *args, **kwargs)
-				comment = self.modelform.clean(**self.POST).save(
-					session, self.comment_model(uid=str(uuid.uuid4()), series_id=r.publicid))
-
-				return self.send_response(json.dumps({
-					'ID': comment.uid, gcapicodes.STATUS: gcapicodes.SUCCESS, 
-					gcapicodes.OBJECT_DATA: self.orthanc_commentjson(comment),
-				}, cls=SonadorJsonEncoder), status_code=201)
-
-		except ResourceDoesNotExist as err:
-			return self.http404_resource_not_found(response={
-				gcapicodes.ERROR: 'Resource uid=%s does not exist' % self.get_resource_uid(*args, **kwargs) or '(none)',
-				gcapicodes.STATUS: gcapicodes.FAIL
-			})
-
-		except Exception as err:
-			logger.error('Unable to create comment due to an error. Error: "%s"\n%s' % (err, traceback.format_exc()))
-
-			return self.send_response(json.dumps({
-				'error': str(err), gcapicodes.STATUS: gcapicodes.FAIL,
-			}), status_code=400)
+		# Retrieve user ID to add to the comment. Comments are always associated with
+		# the ID of the user which made the "create" request.
+		self.init_user_context(self.request)
+		return self.model(**{ 'uid': str(uuid.uuid4()), self.model.resource_foreignkey_attr: ruid, 'user': self.user.pk })
 
 
-class CommentSeriesRestView(ResourceUidMixin, OrthancBaseView):
-	'''	REST endpoint which can be used to get, put, and delete a specified comment from a series
+class CommentBaseRestView(AdminUserLookupMixin, UserContextMixin, ResourceChildBaseRestView):
+	'''	REST endpoint which can be used to get, put, and delete comment instances associated with a resource model
 	'''
-	sessionmaker = None
-
-	resource_cachemodel = CacheSeries
-	comment_model = ImagingSeriesComment
+	resource_cachemodel = None
+	model = None
 	modelform = CommentValidationForm
 
-	orthanc_commentjson = lambda _,c: orthanc_commentjson(c)
-
-	def get_comment_uid(self, *args, sep='/', **kwargs):
-		'''	Retrieve the UID of the comment from the URL
+	def orthanc_objectjson(self, c):
+		'''	Serialize comment to JSON, add user details to response
 		'''
-		return self.uri.split(sep)[-1]
+		# Retrieve user details from lookup collection
+		if c.user and getattr(self, 'user_collection', None) and self.user_collection.get_modelinstance(c.user):
+			_user = self.user_collection.get_modelinstance(c.user)
 
-	def get_comment(self, session, *args, sid=None, cid=None, **kwargs):
-		'''	Retrieve a comment for the provided ID. Throws ResoruceDoesNotExist
+		# Unable to locate user instance
+		else: _user = None
+
+		_json = orthanc_commentjson(c, user=_user)		
+		return _json
+
+	def get_object(self, session, *args, rid=None, cid=None, **kwargs):
+		'''	Retrieve a comment for the provided ID. Throws ResourceDoesNotExist
 			if unable to find either the parent series or a comment with the provided
 			UID associated with the series.
 
 			@returns comment instance
 		'''
 		# Retrieve resource and comment UID
-		r = self.get_resource(session, *args, ruid=sid, **kwargs)
-		cid = cid or self.get_comment_uid(*args, **kwargs)
+		r = kwargs.get('resource') or self.get_resource(session, ruid=rid)
+		cid = cid or self.get_object_uid(*args, **kwargs)
 
-		comment = session.query(self.comment_model).filter_by(series_id=r.publicid, uid=cid).first()
+		comment = session.query(self.model).filter_by(**{ self.model.resource_foreignkey_attr: r.publicid, 'uid': cid }).first()
 		if not comment:
-			raise ResourceDoesNotExist('Unable to retrieve comment ID=%s for Series=%s' % (cid,sid))
+			raise ResourceDoesNotExist('Unable to retrieve comment ID=%s for Series=%s' % (cid,rid))
+
+		# Retrieve user details for the comment
+		if comment.user and not getattr(self, 'user_collection', None):
+			setattr(self, 'user_collection', self.sonador_user_lookup([comment.user]))
 
 		return comment
 
-	def setup(self, output, uri, request, *args, **kwargs):
-		'''	Verify that database properties, database models, and indexing method have been provided.
+	def modelform_kwargs(self, **kwargs):
+		'''	Add session, Sonador Manager, and user context to modelform.clean
 		'''
-		super().setup(output, uri, request)
-
-		# Ensure valid session maker instance is present
-		if self.sessionmaker is None:
-			raise ConfigurationError(
-				'Unable to initialize %s view instance: invalid session maker instance' % type(self).__name__)
+		form_kwargs = super().modelform_kwargs(**kwargs)
+		form_kwargs.update({
+			**pick(kwargs, ('session', 'update', 'obj')),
+			**pick(self, ('sonador_manager', 'resource_cachemodel', 'model')),
+		})
 		
-		# De-serialize request data and retrieve operation parameters
-		self.POST = json.loads(request.get('body')) if request.get('body') else {}
-
-		# Ensure that a resource model has been defined and an index method is available
-		self.init_resource_mixin(*args, **kwargs)
-
-	def get(self, output, uri, request, *args, **kwargs):
-		''' Retrieve specific comment from series
-		'''
-		sid = self.get_resource_uid(*args, **kwargs)
-		cid = self.get_comment_uid(*args, **kwargs)
-
-		try:
-			with self.sessionmaker() as session:
-
-				# Retrieve requested comment
-				return self.send_response(
-					json.dumps(self.orthanc_commentjson(
-						self.get_comment(session, *args, sid=sid, cid=cid, *args, **kwargs)), 
-					cls=SonadorJsonEncoder))
-
-		except ResourceDoesNotExist as err:
-			response = ({
-				gcapicodes.ERROR: 'Comment ID=%s for Series=%s does not exist' % (cid or '(none)', sid or '(none)'),
-				gcapicodes.STATUS: gcapicodes.FAIL
-			})
-			return self.http404_resource_not_found(response=response)
-
-	def put(self, output, uri, request, *args, **kwargs):
-		''' Edit comment text data
-		'''
-		sid = self.get_resource_uid(*args, **kwargs)
-		cid = self.get_comment_uid(*args, **kwargs)
-		
-		try: 
-			with self.sessionmaker() as session:
-
-				# Retrieve comment instance from database
-				comment = self.get_comment(session, *args, sid=sid, cid=cid, **kwargs)
-
-				# Parse/validate request, update model properties, commit to database
-				self.modelform.clean(**self.POST).save(session, comment)
-				
-				return self.send_response(
-					json.dumps({
-						'ID': cid,
-						IMAGING_SERVER_RESOURCE_SERIES: sid,
-						gcapicodes.STATUS: gcapicodes.SUCCESS,
-					}, cls=SonadorJsonEncoder))
-
-		except ResourceDoesNotExist as err:
-			response = ({
-				gcapicodes.ERROR: 'Resource uid=%s does not exist' \
-					% self.get_resource_uid(*args, **kwargs) or '(none)',
-				gcapicodes.STATUS: gcapicodes.FAIL
-			})
-
-			return self.http404_resource_not_found(response=response)
-
-		except Exception as err:
-			logger.error('Unable to update series=%s comment=%s due to error. Error: %s\n%s'
-				% (sid, cid, err, traceback.format_exc()))
-
-			return self.send_response(json.dumps({
-				'error': str(err), gcapicodes.STATUS: gcapicodes.FAIL
-			}), status_code=400)
-		
-	def delete(self, output, uri, request, *args, **kwargs):
-		''' Delete comment from series
-		'''
-		sid = self.get_resource_uid(*args, **kwargs)
-		cid = self.get_comment_uid(*args, **kwargs)
-
-		try: 
-			with self.sessionmaker() as session:
-
-				# Delete object from database
-				comment = self.get_comment(session, *args, sid=sid, cid=cid, **kwargs)
-				session.delete(comment)
-				session.commit()
-
-				return self.send_response(json.dumps({
-					'ID': cid,
-					IMAGING_SERVER_RESOURCE_SERIES: sid,
-					gcapicodes.STATUS: gcapicodes.SUCCESS,
-				}, cls=SonadorJsonEncoder))
-
-		except ResourceDoesNotExist as err:
-			response = ({
-				gcapicodes.ERROR: 'Resource uid=%s does not exist' \
-					% self.get_resource_uid(*args, **kwargs) or '(none)',
-				gcapicodes.STATUS: gcapicodes.FAIL
-			})
-
-			return self.http404_resource_not_found(response=response)
+		# Retrieve user context and add to keyword arguments
+		self.init_user_context(self.request)
+		form_kwargs['request_user'] = self.user
+		return form_kwargs
 
 
-class DicomSeriesJsonMixin(object):
-	'''	Mixin class which adds the SeriesInstanceUID to comment JSON attributes
+
+# Series Comments Views
+
+
+class CommentSeriesManagementView(CommentBaseManagementView):
+	''' REST endpoint which can be used to get and add on to the Comments list for series
 	'''
-	def orthanc_commentjson(self, c, *args, **kwargs):
-		'''	Add the DICOM series instance UID to the JSON response
-		'''
-		cjson = super().orthanc_commentjson(c)
-		cjson[DCMHEADER_SERIES_INSTANCE_UID] = self.get_resource_uid(*args, **kwargs)
-		return cjson
+	resource_cachemodel = CacheSeries
+	model = ImagingSeriesComment
 
 
-class CommentSeriesDICOMManagementView(DicomSeriesJsonMixin, DicomResourceMixin, CommentSeriesManagementView):
+class CommentSeriesRestView(CommentBaseRestView):
+	'''	REST endpoint which can be used to get, put, and delete a specified comment from a series
+	'''
+	resource_cachemodel = CacheSeries
+	model = ImagingSeriesComment
+
+
+class CommentSeriesDICOMManagementView(DicomUidJsonMixin, DicomResourceMixin, CommentSeriesManagementView):
 	'''	DICOMweb comment management view: list and create
 	'''
-	def get_comments(self, session, *args, ruid=None, **kwargs):
+	dicom_uid_header = DCMHEADER_SERIES_INSTANCE_UID
+
+	def setup(self, output, uri, request, *args, **kwargs):
+		super().setup(output, uri, request, *args, **kwargs)
+		self._init_dicom_json(*args, **kwargs)
+
+	def get_objects(self, session, *args, ruid=None, **kwargs):
 		'''	Retrieve the comment instances for the view resource
 		'''
-		r = self.get_resource(session, *args, ruid=ruid, **kwargs)
-		return session.query(self.comment_model).filter_by(series_id=r.publicid)
+		r = kwargs.get('resource') or self.get_resource(session, ruid=ruid)
+		_comments = session.query(self.model).filter_by(**{ self.model.resource_foreignkey_attr: r.publicid })
+
+		# Retrieve user details for the comments
+		_user_uids = set([c.user for c in _comments])
+		if _user_uids:
+			setattr(self, 'user_collection', self.sonador_user_lookup(_user_uids))
+
+		return _comments
 
 
-class CommentSeriesDICOMRestView(DicomSeriesJsonMixin, DicomResourceMixin, CommentSeriesRestView):
+class CommentSeriesDICOMRestView(DicomUidJsonMixin, DicomResourceMixin, CommentSeriesRestView):
 	'''	DICOMweb REST view: retrieve individual comment instances, update, and delete comments
 	'''
+	dicom_uid_header = DCMHEADER_SERIES_INSTANCE_UID
+
+	def setup(self, output, uri, request, *args, **kwargs):
+		super().setup(output, uri, request, *args, **kwargs)
+		self._init_dicom_json(*args, **kwargs)
+
+
+
+# Study Comment Views
+
+class CommentStudyManagementView(CommentBaseManagementView):
+	''' REST endpoint which can be used to that get, put, and delete a specified comment from a study
+	'''
+	resource_cachemodel = CacheStudy
+	model = ImagingStudyComment
+
+
+class CommentStudyRestView(CommentBaseRestView):
+	''' REST endpoint which can be used to that get, put, and delete a specified comment from a study
+	'''
+	resource_cachemodel = CacheStudy
+	model = ImagingStudyComment
+	
+
+class CommentStudyDICOMManagementView(DicomUidJsonMixin, DicomResourceMixin, CommentStudyManagementView):
+	'''	DICOMweb comment management view: list and create for study
+	'''
+	dicom_uid_header = DCMHEADER_STUDY_INSTANCE_UID
+
+	def setup(self, output, uri, request, *args, **kwargs):
+		super().setup(output, uri, request, *args, **kwargs)
+		self._init_dicom_json(*args, **kwargs)
+
+	def get_objects(self, session, *args, ruid=None, **kwargs):
+		'''	Retrieve the comment instances for the view resource
+		'''
+		r = kwargs.get('resource') or self.get_resource(session, ruid=ruid)
+		_comments = session.query(self.model).filter_by(study_id=r.publicid)
+
+		# Retrieve user details for the comments
+		_user_uids = set([c.user for c in _comments])
+		if _user_uids:
+			setattr(self, 'user_collection', self.sonador_user_lookup(_user_uids))
+
+		return _comments
+
+
+class CommentStudyDICOMRestView(DicomUidJsonMixin, DicomResourceMixin, CommentStudyRestView):
+	'''	DICOMweb REST view: retrieve individual comment instances, update, and delete comments for study
+	'''
+	dicom_uid_header = DCMHEADER_STUDY_INSTANCE_UID
+
+	def setup(self, output, uri, request, *args, **kwargs):
+		super().setup(output, uri, request, *args, **kwargs)
+		self._init_dicom_json(*args, **kwargs)

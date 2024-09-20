@@ -5,5 +5,7 @@
 	Django terminology and implement a classmethod based entry method called "clean" that can be used
 	for data conversion and other actions.
 '''
-from .base import OrthancBaseForm
+from .base import OrthancBaseForm, OrthancBaseModelform, OrthancViewValidationMixin
 from .comments import CommentValidationForm
+from .distortionfilter import DistortionFilterDeviceValidationForm
+from .worklist import WorklistItemValidationForm

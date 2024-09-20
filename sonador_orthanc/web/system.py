@@ -16,10 +16,11 @@ from sonador.helpers import dcm_tag2label
 from sonador_orthanc_common.apisettings import ORTHANC_SONADOR_CONFIG_URL, ORTHANC_SONADOR_VERSION, \
 	ORTHANC_CONFIG_HTTP_SERVER_SECURE, ORTHANC_CONFIG_ORTHANC_DATABASE, ORTHANC_CONFIG_ACTIVE_PLUGINS, \
 	ORTHANC_CONNECTION_STATE, ORTHANC_CONNECTION_STATE_CONNECTED, ORTHANC_CONNECTION_STATE_OFFLINE, \
-	ORTHANC_SONADOR_CONNECTION, ORTHANC_CONFIG_SECTION_DICT
+	ORTHANC_SONADOR_CONNECTION, ORTHANC_CONFIG_SECTION_DICT, ORTHANC_CONFIG_SECTION_SONADOR
 
 from ..apisettings import VERSION, SONADOR_CACHE_COUNT_PATIENT, SONADOR_CACHE_COUNT_STUDY, SONADOR_CACHE_COUNT_SERIES, \
-	SONADOR_CONF_PRIVATE_TAGS, SONADOR_CONF_DATETIME_TAGS, SONADOR_CONF_PRIVATE_TAGS
+	SONADOR_CONF_PRIVATE_TAGS, SONADOR_CONF_DATETIME_TAGS, SONADOR_CONF_PRIVATE_TAGS, \
+	SONADOR_CONF_KAFKA, SONADOR_CONF_KAFKA_TOPIC
 from ..db.cache import CacheSeries, CacheStudy, CachePatient
 
 from .base import OrthancBaseView
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class SonadorOrthancSystemReportView(OrthancBaseView):
-	'''	View instance showing Orthanc and Sonador components	
+	'''	View instance showing Orthanc and Sonador components
 	'''
 	orthanc_conf = None
 	servermanager = None
@@ -69,6 +70,14 @@ class SonadorOrthancSystemReportView(OrthancBaseView):
 
 			for rtype, dcm_tags in self.orthanc_conf.get(SONADOR_CONF_PRIVATE_TAGS, {}).items():
 				sys_info[SONADOR_CONF_PRIVATE_TAGS][rtype] = ';'.join([pt for pt in map(_private_hexcode, dcm_tags) if pt])
+
+		# Sonador Configuration
+		sys_sonador = self.orthanc_conf.get(ORTHANC_CONFIG_SECTION_SONADOR, {})
+
+		# Sonador/Kafka Configuration
+		sys_kafka = sys_sonador.get(SONADOR_CONF_KAFKA, {})
+		if sys_kafka and sys_kafka.get(SONADOR_CONF_KAFKA_TOPIC):
+			sys_info['SonadorKafka'] = { 'Enabled': True, 'DcmTopic': sys_kafka.get(SONADOR_CONF_KAFKA_TOPIC) }
 
 		return self.send_response(json.dumps(sys_info, cls=SonadorJsonEncoder))
 

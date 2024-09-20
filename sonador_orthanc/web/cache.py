@@ -181,11 +181,9 @@ class CacheStatusBaseView(CacheBaseView):
 		}
 
 
-class CacheIndexResourceView(ResourceUidMixin, OrthancBaseView):
+class CacheIndexResourceView(ResourceUidMixin, CacheBaseView):
 	'''	REST endpoint which can be used to place a copy of DICOM resource data in the Sonador cache.
 	'''
-	sonador_manager = None
-	sessionmaker = None
 	dcm_privatetags = None
 	dcm_datetags = None
 
@@ -193,16 +191,6 @@ class CacheIndexResourceView(ResourceUidMixin, OrthancBaseView):
 		'''	Verify that database properties, database models, and indexing method have been provided.
 		'''
 		super().setup(output, uri, request)
-
-		# Ensure that Sonador connection instance is present
-		if self.sonador_manager is None:
-			raise ConfigurationError(
-				'Unable to initialize %s view instance: invalid Sonador connection' % type(self).__name__)
-
-		# Ensure valid session maker instance is present
-		if self.sessionmaker is None:
-			raise ConfigurationError(
-				'Unable to initialize %s view instance: invalid session maker instance' % type(self).__name__)
 
 		# Ensure that a resource model has been defined and an index method is available
 		self.init_resource_mixin(*args, **kwargs)
