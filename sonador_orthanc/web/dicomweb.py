@@ -153,6 +153,7 @@ class DicomUidJsonMixin(object):
 		return cjson
 
 
+
 def init_cached_endpoints(orthanc_conf, sonador_manager, OrthancSession):
 	'''	Initialize DICOMweb endpoints which utilize the Sonador Resource cache
 	'''
@@ -185,6 +186,7 @@ def init_ext_endpoints(orthanc_conf, sonador_manager, OrthancSession):
 
 	from .comments import CommentSeriesDICOMManagementView, CommentSeriesDICOMRestView, CommentStudyDICOMManagementView, CommentStudyDICOMRestView
 
+	# Series DICOMweb comment endpoints
 	comments_series_dicomweb_url = posixpath.join(dicomweb_root, r'series/(\d+(\.\d+)+)/comments')
 	orthanc.LogWarning('Enabling DICOMweb extension: series comments %s' % comments_series_dicomweb_url)
 
@@ -195,7 +197,7 @@ def init_ext_endpoints(orthanc_conf, sonador_manager, OrthancSession):
 			r'series/(\d+(\.\d+)+)/comments/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'),
 		CommentSeriesDICOMRestView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
 
-
+	# Study DICOMweb comment endpoints
 	comments_study_dicomweb_url = posixpath.join(dicomweb_root, r'studies/(\d+(\.\d+)+)/comments')
 	orthanc.LogWarning('Enabling DICOMweb extension: study comments %s' % comments_study_dicomweb_url)
 
@@ -264,29 +266,6 @@ def init_worklist_endpints(orthanc_conf, sonador_manager, OrthancSession):
 		StudyReviewerWorklistItemDICOMListView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession, 
 			cache_dicomtags=orthanc_maindicom_tags(orthanc_conf), dcm_privatetags=dcm_privatetags))
 	
-	
-	
-
-def init_worklist_endpints(orthanc_conf, sonador_manager, OrthancSession):
-	'''	Initialize DICOMweb worklist endpoints
-	'''
-	# Worklist Views
-	from ..worklist.web import StudyReviewerWorklistItemDICOMManagementView, StudyReviewerWorklistItemDICOMRestView
-
-	dicomweb_conf = orthanc_conf.get(ORTHANC_CONFIG_SECTION_DICOMWEB, {})
-	dicomweb_root = dicomweb_conf.get('Root')
-	dcm_privatetags = orthanc_conf.get(SONADOR_CONF_PRIVATE_TAGS, {})
-	if not dicomweb_root:
-		raise ConfigurationError('Unable to initialize Study list endpoint, invalid DICOMweb configuration. '
-			+ 'No DICOMweb root defined in configuration.')
-
-	orthanc.LogWarning('Enabling DICOMweb worklist endpoints')
-	
-	# Reviewer Worklist Item endpoints
-	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'studies/(\d+(\.\d+)+)/worklists'),
-		StudyReviewerWorklistItemDICOMManagementView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
-	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'studies/(\d+(\.\d+)+)/worklists/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'),
-		StudyReviewerWorklistItemDICOMRestView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
 
 def init_tag_endpoints(orthanc_conf, sonador_manager, OrthancSession):
 	'''	Initialize DICOMweb extension endpoints
@@ -344,7 +323,6 @@ def init_auth_endpoints(orthanc_conf, sonador_manager, OrthancSession):
 		AuthDICOMRestView.as_view(sonador_manager=sonador_manager,
 			sessionmaker=OrthancSession, resource_cachemodel=CacheStudy, model=GroupStudyAuth,
 			modelform=GroupAclValidationForm, dicom_uid_header=DCMHEADER_STUDY_INSTANCE_UID))
-
 
 	# Series ACL endpoints
 	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'series/(\d+(\.\d+)+)/acl/user'),
