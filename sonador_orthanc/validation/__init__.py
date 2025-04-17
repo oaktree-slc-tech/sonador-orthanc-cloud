@@ -9,3 +9,4 @@ from .base import OrthancBaseForm, OrthancBaseModelform, OrthancViewValidationMi
 from .comments import CommentValidationForm
 from .distortionfilter import DistortionFilterDeviceValidationForm
 from .worklist import WorklistItemValidationForm
+from .preferences import UserPreferencesValidationForm
