@@ -295,6 +295,14 @@ def orthanc_cache_onstart(changeType, level, resource):
 		DistortionFilterDeviceRestView.as_view(sessionmaker=OrthancSession))
 	orthanc.RegisterRestCallback(r'/distortion-filter/([0-9a-fA-F]{8}\-?){5}',
 		DistortionFilterView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
+ 
+	# User Preferences
+	from sonador_orthanc.web.preferences import UserPreferencesManagementView, UserPreferencesRestView
+	
+	orthanc.RegisterRestCallback(r'/user-preferences',
+		UserPreferencesManagementView.as_view(sessionmaker=OrthancSession))
+	orthanc.RegisterRestCallback(r'/user-preferences/([0-9a-fA-F]{8}\-?){5}',
+		UserPreferencesRestView.as_view(sessionmaker=OrthancSession))
 
 	# Tags
 	from sonador_orthanc.web.tag import TagItemManagementView, TagItemRestView
