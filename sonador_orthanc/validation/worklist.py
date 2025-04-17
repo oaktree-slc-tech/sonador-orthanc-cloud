@@ -10,8 +10,8 @@ from client.utils.conversion import str2bool
 from client.errors import ClientOperationError
 from client.errors import ConfigurationError
 
-from sonador.apisettings.worklists import SONADOR_WORKLIST_STATUS_APPROVED, SONADOR_WORKLIST_STATUS_REJECTED, \
-	SONADOR_WORKLIST_STATUS_UNREAD, SONADOR_WORKLIST_STATUS_REVIEWED
+from sonador.apisettings.worklists import SONADOR_WORKLIST_STATUS_SCHEDULED, SONADOR_WORKLIST_STATUS_INPROGRESS, \
+	SONADOR_WORKLIST_STATUS_COMPLETED, SONADOR_WORKLIST_STATUS_CANCELLED
 
 from .. import apisettings as sonador_api
 
@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 class WorklistItemValidationForm(SonadorGroupValidationMixin, SonadorUserValidationMixin, OrthancBaseModelform):
 	''' Validation model for validating the structure of worklist
 	'''	
-	State: Literal[SONADOR_WORKLIST_STATUS_REJECTED, SONADOR_WORKLIST_STATUS_APPROVED, 
-		SONADOR_WORKLIST_STATUS_UNREAD, SONADOR_WORKLIST_STATUS_REVIEWED]
+	State: Literal[SONADOR_WORKLIST_STATUS_SCHEDULED, SONADOR_WORKLIST_STATUS_INPROGRESS, 
+		SONADOR_WORKLIST_STATUS_COMPLETED, SONADOR_WORKLIST_STATUS_CANCELLED]
 	Group: int
 	User: int
 	Complete: datetime.datetime = Field(None, title='Complete', description='Mark worklist as complete')
@@ -50,6 +50,7 @@ class WorklistItemValidationForm(SonadorGroupValidationMixin, SonadorUserValidat
 			Refer to https://docs.pydantic.dev/latest/api/base_model/.
 
 			Validation rules:
+			
 			1. Ensure that the specified group exists and is associated with the server.
 			2. Ensure that the specified user exists and has access to the server.
 			3. Prevent a group from being changed after the worklist item has been created.
@@ -78,11 +79,34 @@ class WorklistItemValidationForm(SonadorGroupValidationMixin, SonadorUserValidat
 
 		# Check to see if the specified group exists
 		group = kwargs.get('Group')
-		cls.validate_group(sonador_manager, group, fieldname='Group')
+		_group = cls.validate_group(sonador_manager, group, fieldname='Group').get_modelinstance(group)
+
+		# Ensure that the group has worklists enabled
+		_acl = sonador_manager.get_internal_imageserver().fetch_acl().get_group_acl(_group.pk)
+		if not getattr(_acl, 'worklist', False):
+			emsg = 'Invalid group worklist policy. Group %s must include an active worklist policy to %s worklist instances' % (
+				_group.pk, 'create' if _create else 'update' if _update else '(undefined)')
+			err = PydanticValidationError.from_exception_data(emsg, line_errors=[
+				InitErrorDetails(
+					type=PydanticCustomError(sonador_api.SONAODR_OBJECT_INVALID_ERROR, emsg),
+					loc=('Group',), input={ 'Group': group },
+					msg=emsg)
+			])
+			raise err
 
 		# Check to see if the specified user exists
 		user = kwargs.get('User')
-		cls.validate_user(sonador_manager, user, fieldname='User')
+		_user = cls.validate_user(sonador_manager, user, fieldname='User').get_modelinstance(user)
+
+		# Ensure that the user is a member of the specified group
+		if not any(group == g.get('id') for g in _user.groups):
+			emsg = 'User not a member of group. User must be a member of the group in order to create a worklist item.'
+			err = PydanticValidationError.from_exception_data(emsg, line_errors=[
+				InitErrorDetails(
+					type=PydanticCustomError(sonador_api.SONAODR_OBJECT_INVALID_ERROR, emsg),
+					loc=('User',), input={ 'User': user },
+					msg=emsg)
+			])
 
 		# Set the complete field to current datetime if 'Complete' key is present. If complete is not
 		# present or a negative value
@@ -111,4 +135,5 @@ class WorklistItemValidationForm(SonadorGroupValidationMixin, SonadorUserValidat
 			])
 			raise err 
 
-		return super().clean(*args, **omit(kwargs, cls.clean_omit_kwargs))
+		_data = super().clean(*args, **omit(kwargs, cls.clean_omit_kwargs))
+		return _data

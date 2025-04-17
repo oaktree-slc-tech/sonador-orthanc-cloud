@@ -80,7 +80,6 @@ class CachePatientQueryView(CachePatientListBaseView):
 	def post(self, output, uri, request):
 		'''	Return list of patients which match the request parameters
 		'''
-		print("PATIENT POST", output, uri, request)
 		try:
 			with self.sessionmaker() as session:
 

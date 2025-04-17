@@ -111,8 +111,8 @@ def init_fetch_sonador_configuration_callback(sonador_servermanager: SonadorServ
 			iserver = sonador_servermanager.server.get_imageserver(sonador_servermanager.imageserver_id)
 
 			# Apply DICOM and DICOMweb configuration from Sonador
-			orthancserver_sync_modalities(iserver, orthanc_default_encoding=orthanc_default_encoding)
-			orthancserver_sync_dcmweb_remotes(iserver, orthanc_default_encoding=orthanc_default_encoding)
+			orthancserver_sync_modalities(sonador_servermanager, iserver, orthanc_default_encoding=orthanc_default_encoding)
+			orthancserver_sync_dcmweb_remotes(sonador_servermanager, iserver, orthanc_default_encoding=orthanc_default_encoding)
 
 		except Exception as err:
 			logger.error(

@@ -175,7 +175,7 @@ class AuthRestView(AuthJsonMixin, ResourceChildBaseRestView):
 		# with those of the existing model instance
 		_obj = kwargs.get('obj')
 		if _obj:
-			form_kwargs = self._backfill_object_attrs(obj, attrs=form_kwargs)
+			form_kwargs = self._backfill_object_attrs(_obj, attrs=form_kwargs)
 
 		# Database session/object/update keys, sonador manager/cache model/ACL model keys, and parent resource
 		form_kwargs.update({
@@ -255,9 +255,7 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 					_rjson[IMAGING_SERVER_AUTHREQUEST_LEVEL_LOOKUP[_auth_request.level]] = _auth_request.orthanc_id
 
 				# Add user/group ACL for requested resource
-				_rjson.update(self.resource_policy(session, _auth_request))
-
-				logger.warning('ACL response: %s' % _rjson)
+				_rjson.update(self.resource_policy(session, _auth_request))				
 
 				return self.send_response(json.dumps(_rjson, cls=SonadorJsonEncoder))
 
@@ -286,6 +284,90 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 
 		return policy
 
+	def _fetch_patient_policy(self, session, principal, level, uid, patient_authmodel, study_authmodel, series_authmodel,
+			permissions=ACL_PERM_RESOURCE, policy=None):
+		'''	Parse the request to an ACL policy for the desired patient.
+
+			*	`view` permission on a study grants limited `view` permissions on the patient.
+			* 	A `modify` permission on a child study group policy in combination with a `worklist` permission on the same group grants
+				a `modify` permission for the patient. This workaround is needed since the authorization plugin
+				checks patient and study permissions for worklist requests and will deny the request if there is not a `modify`, 
+				permission for the patient. IMPORTANT: the group on the study and the group on the worklist policy must match.
+				-	TODO: Add URI to the request made by the authorization plugin so it is possible to understand which resource
+					is being requested and ONLY provide the `modify` permission for worklist requests.
+
+		'''
+		policy = policy or {}
+		_patient_acl = _study_acl = _series_acl = None
+
+		# Retrieve patient auth policy
+		_patient_acl = session.query(patient_authmodel).filter_by(**{
+				patient_authmodel.principal_foreignkey_attr: principal, 'resource': uid
+			}).first()
+
+		# Retrieve study auth policy
+		_study_acl = session.query(study_authmodel).filter_by(**{
+				study_authmodel.principal_foreignkey_attr: principal,
+			}).filter(study_authmodel.study.has(
+				study_authmodel.resource_cachemodel.parent.has(
+					patient_authmodel.resource_cachemodel.uid == uid )))\
+			.first()
+
+		# Retrieve series auth policy
+		_series_acl = session.query(series_authmodel).filter_by(**{
+				series_authmodel.principal_foreignkey_attr: principal
+			}).filter(series_authmodel.series.has(
+				series_authmodel.resource_cachemodel.parent.has(
+					study_authmodel.resource_cachemodel.parent.has(
+				 		patient_authmodel.resource_cachemodel.uid == uid )))) \
+			.first()
+
+		# Set view permission: start with series, then inspect study. If either permission
+		# is true, then the policy should be set to view = True.
+		if _series_acl:
+			policy[ACL_PERM_VIEW] = getattr(_series_acl, ACL_PERM_VIEW)
+		if _study_acl:
+			if not policy.get(ACL_PERM_VIEW):
+				policy[ACL_PERM_VIEW] = getattr(_study_acl, ACL_PERM_VIEW)
+
+		# Set modify permission: start with study. If the study modify policy is set to true
+		# and it is a group policy, retrieve the global policies from Sonador and check
+		# for a worklist permission. If the group UIDs match, set the modify policy to true.
+		# IMPORTANT: required in order to allow limited users to modify worklist items.
+		if _study_acl and isinstance(_study_acl, GroupStudyAuth):
+
+			# Check worklist exemption for modify policy. Fetch global server policies and inspect
+			# worklist permission. If a worklist permission is available for the same group, change the
+			# policy `modify` to True.
+			if not policy.get(ACL_PERM_MODIFY) and _study_acl.modify:
+				_global_acl = self.sonador_manager.get_internal_imageserver().fetch_acl().get_group_acl(_study_acl.group)
+				
+				# Worklist exception criteria: global ACL policy present which matches local study policy group,
+				# the local study policy must defined a `modify` permission, AND the global policy must have a worklist permission.
+				if _global_acl and _study_acl.group == _global_acl.group and getattr(_global_acl, 'worklist'):
+
+					logger.warning(('Override modify for patient based on worklist policy: principal=%s level=%s ' 
+							+' resource-uid=%s study-policy=%s study-policy-modify=%s global-policy=%s global-policy-worklist=%s acl-patient-modify=%s') % (
+						principal, level, uid, _study_acl.uid, _study_acl.modify, _global_acl.pk, getattr(_global_acl, 'worklist', None), True
+					))
+					policy[ACL_PERM_MODIFY] = True
+
+		# Set patient attributes from patient ACL
+		if _patient_acl:
+
+			# Set view policy
+			if not policy.get(ACL_PERM_VIEW):
+				policy[ACL_PERM_VIEW] = getattr(_patient_acl, ACL_PERM_VIEW)
+
+			# Set modify policy
+			if not policy.get(ACL_PERM_MODIFY):
+				policy[ACL_PERM_MODIFY] = getattr(_patient_acl, ACL_PERM_MODIFY)
+
+			# Set other attributes
+			policy.update(pick(_patient_acl, (ACL_PERM_REMOVE, ACL_PERM_ACL)))
+
+		return policy, _patient_acl, _study_acl, _series_acl
+
 	def _fetch_resource_policy(self, session, principal, level, uid, patient_authmodel, study_authmodel, series_authmodel,
 			permissions=ACL_PERM_RESOURCE):
 		'''	Parse the request to an ACL policy for the desired resource. Resource grants provide both direct
@@ -304,46 +386,8 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 
 		# Retrieve authorizations grants for patient queries
 		if level == IMAGING_SERVER_RESOURCE_PATIENT.lower():
-
-			# Retrieve patient auth policy
-			_patient_acl = session.query(patient_authmodel).filter_by(**{
-					patient_authmodel.principal_foreignkey_attr: principal, 'resource': uid
-				}).first()
-
-			# Retrieve study auth policy
-			_study_acl = session.query(study_authmodel).filter_by(**{
-					study_authmodel.principal_foreignkey_attr: principal,
-				}).filter(study_authmodel.study.has(
-					study_authmodel.resource_cachemodel.parent.has(
-						patient_authmodel.resource_cachemodel.uid == uid )))\
-				.first()
-
-			# Retrieve series auth policy
-			_series_acl = session.query(series_authmodel).filter_by(**{
-					series_authmodel.principal_foreignkey_attr: principal
-				}).filter(series_authmodel.series.has(
-					series_authmodel.resource_cachemodel.parent.has(
-						study_authmodel.resource_cachemodel.parent.has(
-					 		patient_authmodel.resource_cachemodel.uid == uid )))) \
-				.first()
-
-			# Set view permission: start with series, then inspect study. If either permission
-			# is true, then the policy should be set to view = True.
-			if _series_acl:
-				policy[ACL_PERM_VIEW] = getattr(_series_acl, ACL_PERM_VIEW)
-			if _study_acl:
-				if not policy.get(ACL_PERM_VIEW):
-					policy[ACL_PERM_VIEW] = getattr(_study_acl, ACL_PERM_VIEW)
-
-			# Set patient attributes from patient ACL
-			if _patient_acl:
-
-				# Set view policy
-				if not policy.get(ACL_PERM_VIEW):
-					policy[ACL_PERM_VIEW] = getattr(_patient_acl, ACL_PERM_VIEW)
-
-				# Set other attributes
-				policy.update(pick(_patient_acl, (ACL_PERM_MODIFY, ACL_PERM_REMOVE, ACL_PERM_ACL)))
+			policy, _patient_acl, _study_acl, _series_acl = self._fetch_patient_policy(
+				session, principal, level, uid, patient_authmodel, study_authmodel, series_authmodel, permissions=permissions, policy=policy)
 
 		# Retrieve authorization grants for study queries
 		elif level == IMAGING_SERVER_RESOURCE_STUDY.lower():
@@ -413,7 +457,7 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 			if not policy.get(ACL_PERM_COMMENT_EDIT) and (getattr(_study_acl, 'modify', None) or getattr(_patient_acl, 'modify', None)):
 				policy[ACL_PERM_COMMENT_EDIT] = getattr(_study_acl, 'modify', None) or getattr(_patient_acl, 'modify', None)
 
-			logger.warning('authorization policy for series=%s level=%s orthanc-id=%s\n%s' % (principal, level, uid, policy))
+			logger.debug('Authorization policy for series=%s level=%s orthanc-id=%s\n%s' % (principal, level, uid, policy))
 
 		# Retrieve authorization grants for instance queries
 		elif level == IMAGING_SERVER_RESOURCE_IMAGE.lower():
@@ -438,7 +482,7 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 		policy = {}
 
 		# Retrieve user and group authorizations relevant to the resource request
-		logger.warning('Sonador resource authorization request: user="%s" level="%s" orthanc-id="%s" dicom-uid="%s" resource="%s" method="%s"' % (
+		logger.debug('Sonador resource authorization request: user="%s" level="%s" orthanc-id="%s" dicom-uid="%s" resource="%s" method="%s"' % (
 			auth_request.user.username, auth_request.level.value, auth_request.orthanc_id, auth_request.dicom_uid, auth_request.uri, auth_request.method.value
 		))
 

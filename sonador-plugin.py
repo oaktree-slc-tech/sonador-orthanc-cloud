@@ -463,11 +463,7 @@ def orthanc_cache_onstart(changeType, level, resource):
 	ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
 		SONADOR_RESOURCE_DELETE_SERIES,
 		sonador_cache_maintenance.remove_cache_serverchange_callback(
-			ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cachedb.CacheSeries))
-
-	# Initialize DICOM-SR meta parsing
-	from sonador_orthanc.tasks import tags as dcmsr_tags
-	dcmsr_tags.init_dcmsr_comment_parsing(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
+			ORTHANC_SONADOR_MANAGER, OrthancSession, sonador_cachedb.CacheSeries))	
 
 
 ORTHANC_SONADOR_MANAGER.register_serverchange_callback(
