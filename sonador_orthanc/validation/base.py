@@ -116,6 +116,7 @@ class SonadorUserValidationMixin:
 		try:
 			_iserver = sonador_manager.get_internal_imageserver()
 			_users = _iserver.user_lookup([user])
+			return _users
 
 		except ClientOperationError as err:
 
@@ -145,6 +146,7 @@ class SonadorGroupValidationMixin:
 		try:
 			_iserver = sonador_manager.get_internal_imageserver()
 			_groups = _iserver.group_lookup([group])
+			return _groups
 
 		except ClientOperationError as err:
 

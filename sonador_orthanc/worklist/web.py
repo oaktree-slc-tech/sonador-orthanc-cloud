@@ -6,7 +6,7 @@ import json, uuid, logging
 
 from sqlalchemy.orm import selectinload, joinedload
 
-from client.errors import ConfigurationError
+from client.errors import ConfigurationError, ResourceDoesNotExist
 from client.utils.object import pick, omit
 
 from sonador.apisettings import DCMHEADER_STUDY_INSTANCE_UID, DCMHEADER_SERIES_INSTANCE_UID

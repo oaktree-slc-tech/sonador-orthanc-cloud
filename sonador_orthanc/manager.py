@@ -7,6 +7,7 @@ from client.errors import ConfigurationError, ResourceDoesNotExist
 from client.utils.object import pick
 
 from sonador.servers import SonadorServer, SonadorImagingServer
+from sonador.servers.auth import SonadorGroupAccessControlListCollection
 from sonador.remote import sonador_dataobject_create
 
 from sonador_orthanc_common import apisettings as orthancapi
@@ -38,6 +39,8 @@ class OrthancCloudInternalImagingServer(OrthancInternalImagingServer):
 	'''	Imaging server implementaiton which can be used within the Sonador/Orthanc cloud plugin.
 		Uses the orthanc Python package to retrieve and populate data structures and perform user/group.
 	'''
+	group_acl_datacollection_class = SonadorGroupAccessControlListCollection
+
 	def admin_verify_user_credentials(self, token_key, token_value, **kwargs):
 		'''	Verify the provided token key and value using the imaging server introspection endpoint.
 			If valid, a copy of the user context will be provided for the server including the profile,
@@ -56,6 +59,11 @@ class OrthancCloudInternalImagingServer(OrthancInternalImagingServer):
 		'''	Retrieve the details of the groups specified in group_uids
 		'''
 		return SonadorImagingServer.group_lookup(self, group_uids, **kwargs)
+
+	def fetch_acl(self, **kwargs):
+		'''	Retrieve ACL policies associated with the server
+		'''
+		return SonadorImagingServer.fetch_acl(self, **kwargs)
 
 
 class SonadorServerManager(BaseServerManager):

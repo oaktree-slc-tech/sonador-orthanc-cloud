@@ -1,5 +1,5 @@
 # syntax = docker/dockerfile:experimental
-FROM oaktreetech/orthanc-s3:2024-0627
+FROM oaktreetech/orthanc-s3:25.2.0
 ARG CI_COMMIT_SHA
 ARG CLI_CI_COMMIT_SHA
 
@@ -16,8 +16,7 @@ RUN mkdir -p /opt/orthanc/ \
   && git clone https://code.oak-tree.tech/oak-tree/medical-imaging/orthanc-sonador.git \
   && cd orthanc-sonador && git checkout $CI_COMMIT_SHA \
   && git submodule update --init --recursive --remote \
-  && pip3 install --upgrade pip \
-  && pip3 install --timeout 30 -r requirements.txt
+  && pip3 install --timeout 30 -r requirements.txt --break-system-packages
 
 # Install Sonador CLI Client
 RUN cd /opt/ \
@@ -26,4 +25,4 @@ RUN cd /opt/ \
   && git clone https://code.oak-tree.tech/oak-tree/medical-imaging/sonador-cli.git \
   && cd sonador-cli && git checkout $CLI_CI_COMMIT_SHA \
   && git submodule update --init --recursive --remote \
-  && pip install --timeout 30 -r requirements.txt
+  && pip install --timeout 30 -r requirements.txt --break-system-packages
