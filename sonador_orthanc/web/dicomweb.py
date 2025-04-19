@@ -22,7 +22,7 @@ from ..apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, ORTHANC_CONFIG_SECTIO
 from ..helpers import orthanc_maindicom_tags
 from ..db.internal import Resource, DicomIdentifiers
 from ..db.cache import CachePatient, CacheStudy, CacheSeries
-from ..db.helpers import dcmquery2psqlregex
+from ..db.helpers import dcmquery2psqlregex, dcmuid_fetch_dicomidentifier_model
 from ..dcmquery.auth import StudyResourceAclMixin
 
 from .base import OrthancBaseView
@@ -123,9 +123,8 @@ class DicomResourceMixin(ResourceBaseMixin):
 		ruid = ruid or self.get_resource_uid(*args, **kwargs)
 
 		# Retrieve DICOM identifier instance to map to resource
-		di = session.query(self.dicom_identifiers_model) \
-			.options(joinedload(self.dicom_identifiers_model.resource)) \
-			.filter_by(value=ruid).first()
+		di = dcmuid_fetch_dicomidentifier_model(
+			session, ruid, dicom_identifiers_model=self.dicom_identifiers_model)
 		if not di:
 			raise ResourceDoesNotExist(
 				'Unable to retrieve resource model instance, uid=%s does not exist' % ruid,

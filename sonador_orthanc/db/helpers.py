@@ -1,5 +1,7 @@
 import copy, re, fnmatch, logging, datetime
 
+from sqlalchemy.orm import joinedload
+
 from client.utils.object import pick
 
 from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, \
@@ -10,6 +12,7 @@ from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_
 	IMAGING_SERVER_PARENT_PATIENT, IMAGING_SERVER_PARENT_STUDY, IMAGING_SERVER_DCM_TAG, IMAGING_SERVER_DCM_TAG_VALUE
 
 from .. import apisettings as sonador_api
+from .internal import Resource, DicomIdentifiers
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,9 @@ PSQL_REGEX_TRANSFORMS = (
 	(r'(?<!\\)\*', '%*'), # Replace '*' (wildcard), with '%*' (PostgreSQL operator for any character)
 )
 
+
+
+# PostgreSQL Helper Methods
 
 def dcmquery_psqlregex_flags(**kwargs):
 	'''	Create a "flags" string to pass to PSQL via regex_match.
@@ -63,6 +69,29 @@ def dcmquery2psqlregex(dcmquery, regex_transforms=PSQL_REGEX_TRANSFORMS):
 
 	return psql_pattern
 
+
+
+# Database Mapping Functions
+# Help to map data representations between the Sonador Resource Cache and
+# Orthanc's internal data representation.
+
+def dcmuid_fetch_dicomidentifier_model(session, ruid, dicom_identifiers_model=DicomIdentifiers):
+	'''	Retrieve the resource model mapped to the provided resource UID
+
+		@input session (SQLAlchemty ORM Session): session instance to be used for the
+			datbase query.
+		@input ruid (str): resource unique identifier
+		@input dicom_identifiers_model (default=db.internal.DicomIdentifiers): database
+			model to be used for mapping the resource UID to the associated resource instance.
+	'''
+	return session.query(dicom_identifiers_model) \
+		.options(joinedload(dicom_identifiers_model.resource)) \
+		.filter_by(value=ruid).first()
+
+	
+
+
+# Orthanc JSON Serialization Methods
 
 def cache_orthanc_patientjson(cpatient, resource_type=None):
 	'''	Create Orthanc JSON structure for the provided cache patient
