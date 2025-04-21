@@ -19,45 +19,31 @@ from ..web.base import OrthancBaseView
 from ..web.cache import ResourceUidMixin
 from ..web.secure_user import UserContextMixin
 
+from .base import KafkaMixin
 from .resource import fetch_kafka_resource_data, kafka_instance_msg
 
 logger = logging.getLogger(__name__)
 
 
-class OrthancKafkaExportView(UserContextMixin, ResourceUidMixin, OrthancBaseView):
+class OrthancKafkaExportView(KafkaMixin, UserContextMixin, ResourceUidMixin, OrthancBaseView):
 	'''	Orthanc view instance able to export resource Kafka data to the DICOM instances topic.
 
 		* GET: retrieve a copy of the resource data
 		* POST: trigger export to Kafka
 
-		@attr sonador_manager (sonador_orthanc.manager.SonadorServerManager): server manager instance
 		@attr sessionmaker (database session maker class)
 	'''
-	sonador_manager = None
 	sessionmaker = None
-	kafka_topic = None
 	kafka_opcode = None
-
 	server_error_status_code = 500
-	json_cls = SonadorJsonEncoder
 
 	def setup(self, output, uri, request, *args, **kwargs):
 		'''	Verify that all components of the request
 		'''
 		super().setup(output, uri, request, *args, **kwargs)
 
-		# Ensure that the Sonador manager instance is present and has a Kafka producer instance defined
-		if self.sonador_manager is None:
-			raise ConfigurationError(
-				'Unable to initialize %s view: invalid Sonador manager instance' % type(self).__name__)
-
-		if not getattr(self.sonador_manager, 'kafka_producer', None):
-			raise ConfigurationError(('Unable to initialize %s view: Sonador manager instance does not have a Kafka producer '
-				+ 'associated with it.') % type(self).__name__)
-
-		# Ensure that a Kafka topic is associated with the view instance
-		if not self.kafka_topic:
-			raise ConfigurationError('Unable to initiaze %s view, invalid kafka topic "%s"' % (type(self).__name__, self.kafka_topic))
+		# Initialize Kafka mixin attributes
+		self._init_kafka(self, *args, **kwargs)
 
 		# Ensure that an operation code was added to the view
 
@@ -92,7 +78,7 @@ class OrthancKafkaExportView(UserContextMixin, ResourceUidMixin, OrthancBaseView
 		return self.get_resource(session, *args, **kwargs)		
 
 	def fetch_kafka_data(self, output, uri, request, *args, **kwargs):
-		'''	Retrieve resource, aggregate data, and prepare resposne
+		'''	Retrieve resource, aggregate data, and prepare data to send to Kafka
 		'''
 		# Retrieve resource
 		with self.sessionmaker() as session:
@@ -149,9 +135,7 @@ class OrthancKafkaExportView(UserContextMixin, ResourceUidMixin, OrthancBaseView
 		try:
 
 			# Retrieve Kafka data for the resource
-			_kafka = self.fetch_kafka_data(output, uri, request, *args, **kwargs)
-			self.sonador_manager.kafka_producer.send_msg(
-				json.dumps(_kafka, cls=self.json_cls), topic=self.kafka_topic)
+			_kafka = self.send_kafka_msg(output, uri, request, *args, **kwargs)
 
 			# Attach request payload (if present)
 			if self.POST:
