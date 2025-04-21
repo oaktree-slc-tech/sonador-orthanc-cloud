@@ -9,20 +9,28 @@ from sqlalchemy.orm import selectinload, joinedload
 from client.errors import ConfigurationError, ResourceDoesNotExist
 from client.utils.object import pick, omit
 
-from sonador.apisettings import DCMHEADER_STUDY_INSTANCE_UID, DCMHEADER_SERIES_INSTANCE_UID
+from sonador.apisettings import DCMHEADER_STUDY_INSTANCE_UID, DCMHEADER_SERIES_INSTANCE_UID, IMAGING_SERVER_RESOURCE_STUDY, DICOM_UID_REGEX
+from sonador.serialization import SonadorJsonEncoder
+
+from ..kafka.resource import get_study_worklist_kafka_data, get_study_comment_kafka_data
+from ..kafka.base import KafkaMixin
 
 from ..db.cache import CachePatient, CacheStudy, CacheSeries
 from ..db.worklist import ProcedureStep, StudyReviewerWorklistItem
-from ..db.helpers import orthanc_worklist_studyjson
+from ..db.comments import ImagingStudyComment
+from ..db.helpers import orthanc_worklist_studyjson, dcmuid_fetch_dicomidentifier_model
+from ..db.internal import Resource, DicomIdentifiers
+
 
 from ..web.base import OrthancBaseView
 from ..web.ext import ResourceChildManagementBaseView, ResourceChildBaseRestView
 from ..web.dicomweb import CacheStudyDicomWebListView
 from ..web.helpers import paginate_query_results
-from ..web.secure_user import AdminUserLookupMixin, AdminGroupLookupMixin
+from ..web.secure_user import AdminUserLookupMixin, AdminGroupLookupMixin, UserContextMixin
 from ..web.dicomweb import DicomResourceMixin, DicomUidJsonMixin
 
 from ..validation.worklist import WorklistItemValidationForm
+from ..validation.comments import CommentValidationForm
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +80,34 @@ class StudyReviewerWorklistJsonMixin:
 
 		return orthanc_worklist_studyjson(w, user=user, group=group)
 
+	def fetch_kafka_data(self, session, sid, wid, *args, **kwargs):
+		'''	Retrieve worklist item data to send to Kafka
 
-class StudyReviewerWorklistItemManagementView(StudyReviewerWorklistJsonMixin, AdminUserLookupMixin, AdminGroupLookupMixin, 
-		ResourceChildManagementBaseView):
+			@input session: SQLAlchemy session instance
+			@input sid (str): Orthanc study UID
+			@input wid (str): Orthanc worklist UID
+		'''
+		return get_study_worklist_kafka_data(self.sonador_manager, sid, wid)
+
+
+class StudyReviewerWorklistItemManagementView(StudyReviewerWorklistJsonMixin, KafkaMixin, 
+		AdminUserLookupMixin, AdminGroupLookupMixin, UserContextMixin, ResourceChildManagementBaseView):
 	'''	Management endpoint which can be used to work with study reviewer worklist items
 	'''
 	resource_cachemodel = CacheStudy
 	model = StudyReviewerWorklistItem
 	modelform = WorklistItemValidationForm
+
+	sonador_manager_required_kafka = False
+	kafka_topic_required = False
+
+	def setup(self, output, uri, request, *args, **kwargs):
+		'''	Setup worklist management view
+		'''
+		super().setup(output, uri, request, *args, **kwargs)
+
+		# Initialize Kafka message push
+		self._init_kafka(*args, **kwargs)
 
 	def get_objects(self, session, *args, ruid=None, **kwargs):
 		'''	Retrieve the worklist instances for the view resource
@@ -117,14 +145,37 @@ class StudyReviewerWorklistItemManagementView(StudyReviewerWorklistJsonMixin, Ad
 
 		return form_kwargs
 
+	def save_object_data(self, session, form_instance, *args, **kwargs):
+     
+		# Save worklist to db
+		obj = super().save_object_data(session, form_instance, *args, **kwargs)
+		
+		# Get Kafka data to publish to a topic
+		if self.kafka_topic:
+			
+			# Publish worklist data to Kafka
+			self.send_kafka_msg(session, obj.study.uid, obj.uid)
+			
+		return obj
 
-class StudyReviewerWorklistItemRestView(StudyReviewerWorklistJsonMixin, AdminUserLookupMixin, AdminGroupLookupMixin,
-		ResourceChildBaseRestView):
+
+class StudyReviewerWorklistItemRestView(StudyReviewerWorklistJsonMixin, KafkaMixin, 
+		AdminUserLookupMixin, AdminGroupLookupMixin, UserContextMixin, ResourceChildBaseRestView):
 	'''	REST endpoint which can be used to retrieve details for, update, and delete study reviewer worklist items
 	'''
 	resource_cachemodel = CacheStudy
 	model = StudyReviewerWorklistItem
 	modelform = WorklistItemValidationForm
+	
+	comment_model = ImagingStudyComment
+	comment_modelform = CommentValidationForm
+
+	sonador_manager_required_kafka = False
+	kafka_topic_required = False
+
+	def setup(self, output, uri, request, *args, **kwargs):
+		super().setup(output, uri, request, *args, **kwargs)
+		self._init_kafka(*args, **kwargs)
 
 	def get_object(self, session, *args, rid=None, cid=None, **kwargs):
 		'''	Retrieve a worklist for the provided ID. Throws ResourceDoesNotExist
@@ -164,10 +215,74 @@ class StudyReviewerWorklistItemRestView(StudyReviewerWorklistJsonMixin, AdminUse
 			**pick(self, ('sonador_manager', 'resource_cachemodel', 'model')),
 			'parent_resource_obj': self.get_resource(**kwargs),
 		})
+		# Logic to check if comments exist in the request
+		if self.POST.get('Comment'):
+			self.init_user_context(self.request)
+  
 		return form_kwargs
 
-	# TODO: Add logic to allow for comments to be attached to a study worklist as part
-	# of an update.
+	def validate_form_data(self, session, obj, *args, **kwargs):
+		# Validate worklist form
+		_form = super().validate_form_data(session, obj, *args, **kwargs)
+  
+		# If comment in request, validate comment form
+		if self.POST.get('Comment'):
+			self.comment_form_instance = self.comment_modelform.clean(**{
+				**self.POST.get('Comment', {}),
+				'session': session,
+				'sonador_manager': self.sonador_manager,
+				'resource_cachemodel': self.resource_cachemodel,
+				'model': self.comment_model,
+				'request_user': self.user,
+				'update': False
+			})
+			
+		return _form
+
+	def init_comment_model(self, session, ruid=None, **kwargs):
+		ruid = ruid or self.get_resource_uid(**kwargs)
+		
+		# Check if ruid is a DICOM ID – if so, get the orthanc ID of the resource
+		if DICOM_UID_REGEX.fullmatch(ruid):
+			di = dcmuid_fetch_dicomidentifier_model(
+				session, ruid, dicom_identifiers_model=DicomIdentifiers)
+			ruid = di.resource.publicid
+		
+		self.init_user_context(self.request)
+		return self.comment_model(**{ 'uid': str(uuid.uuid4()), self.comment_model.resource_foreignkey_attr: ruid, 'user': self.user.pk })
+
+	def fetch_comment_kafka_data(self, session, sid, cid, *args, **kwargs):
+		'''	Retrieve comment data to send to Kafka
+
+			@input session: SQLAlchemy session instance
+			@input sid (str): Orthanc study UID
+			@input cid (str): Orthanc comment UID
+		'''
+		return get_study_comment_kafka_data(self.sonador_manager, sid, cid)
+
+	def save_object_data(self, session, obj, form_instance):
+		# Save worklist to db
+		obj = super().save_object_data(session, obj, form_instance)
+  
+		# If comment in request, save comment to db
+		if self.POST.get('Comment') and getattr(self, 'comment_form_instance', None):
+			cobj = self.comment_form_instance.save(session, self.init_comment_model(session))
+		else: cobj = None
+		
+		# Get Kafka data to publish to a topic
+		if self.kafka_topic:
+
+			# Publish worklist data to Kafka
+			self.send_kafka_msg(session, obj.study.uid, obj.uid)
+
+			# Publish comment data to Kafka
+			if cobj and self.kafka_topic and getattr(self.sonador_manager, 'kafka_producer', None):
+
+				# Retrieve comment Kafka data
+				cdata = self.fetch_comment_kafka_data(session, obj.study.uid, cobj.uid)
+				self.sonador_manager.kafka_producer.send_msg(json.dumps(cdata, cls=self.json_cls), topic=self.kafka_topic)
+			
+		return obj
 
 
 class StudyReviewerWorklistItemDICOMManagementView(
