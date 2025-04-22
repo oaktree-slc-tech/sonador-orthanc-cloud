@@ -274,17 +274,8 @@ def orthanc_cache_onstart(changeType, level, resource):
 
 
 	# Comments
-	from sonador_orthanc.web.comments import CommentSeriesManagementView, CommentSeriesRestView, CommentStudyManagementView, CommentStudyRestView
-
-	orthanc.RegisterRestCallback(r'/series/([0-9a-fA-F]{8}\-?){5}/comments',
-		CommentSeriesManagementView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
-	orthanc.RegisterRestCallback(r'/series/([0-9a-fA-F]{8}\-?){5}/comments/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
-		CommentSeriesRestView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
-	orthanc.RegisterRestCallback(r'/studies/([0-9a-fA-F]{8}\-?){5}/comments',
-		CommentStudyManagementView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
-	orthanc.RegisterRestCallback(r'/studies/([0-9a-fA-F]{8}\-?){5}/comments/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
-		CommentStudyRestView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
-
+	from sonador_orthanc.web import comments as sonador_ext_comments
+	sonador_ext_comments.init_comments(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
 	
 	# Distortion filter
 	from sonador_orthanc.web.distortionfilter import DistortionFilterDeviceManagementView, DistortionFilterDeviceRestView, DistortionFilterView

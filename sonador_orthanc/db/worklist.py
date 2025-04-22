@@ -91,6 +91,12 @@ class StudyReviewerWorklistItem(ReviewerWorklistMixin, DbBase):
 	def type(self):
 		return 'Study Reviewer Worklist Item'
 
+	@classproperty
+	def resource_foreignkey_attr(cls):
+		'''	Foreign key column name that maps the comment to the parent resource
+		'''
+		return 'resource'
+
 
 
 # Database events
