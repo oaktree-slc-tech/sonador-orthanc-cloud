@@ -15,7 +15,6 @@ from ..apisettings import KAFKA_TIMEOUT_DEFAULT, ORTHANC_CONFIG_SECTION_SONADOR,
 
 logger = logging.getLogger(__name__)
 
-
 def get_study_comment_kafka_data(sonador_manager, sid, cid):
 	''' Retrieve Kafka formatted data for study comment
 	'''
@@ -23,7 +22,19 @@ def get_study_comment_kafka_data(sonador_manager, sid, cid):
 	study = _iserver.get_study(sid)
 	comment = study.get_comment(cid)
 		
+	cdata = comment.json
+	cdata['Resource'] = 'Comment'
 	
+	return cdata
+
+
+def get_series_comment_kafka_data(sonador_manager, sxid, cid):
+	''' Retrieve Kafka formatted data for study comment
+	'''
+	_iserver = sonador_manager.get_internal_imageserver()
+	study = _iserver.get_series(sxid)
+	comment = study.get_comment(cid)
+		
 	cdata = comment.json
 	cdata['Resource'] = 'Comment'
 	

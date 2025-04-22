@@ -18,6 +18,9 @@ from ..validation import CommentValidationForm
 from ..db.cache import CacheSeries, CacheStudy
 from ..db.internal import DicomIdentifiers
 
+from ..kafka.resource import get_study_comment_kafka_data, get_series_comment_kafka_data
+from ..kafka.base import KafkaMixin
+
 from .base import OrthancBaseView
 from .cache import ResourceUidMixin
 from .dicomweb import DicomResourceMixin, DicomUidJsonMixin
@@ -27,12 +30,23 @@ from .secure_user import UserContextMixin, AdminUserLookupMixin
 logger = logging.getLogger(__name__)
 
 
-class CommentBaseManagementView(AdminUserLookupMixin, UserContextMixin, ResourceChildManagementBaseView):
+class CommentBaseManagementView(KafkaMixin, AdminUserLookupMixin, UserContextMixin, ResourceChildManagementBaseView):
 	'''	 Management view which can be used to manage comments for a resource model
 	'''	
 	resource_cachemodel = None
 	model = None
 	modelform = CommentValidationForm
+
+	sonador_manager_required_kafka = False
+	kafka_topic_required = False
+
+	def setup(self, output, uri, request, *args, **kwargs):
+		'''	Setup worklist management view
+		'''
+		super().setup(output, uri, request, *args, **kwargs)
+
+		# Initialize Kafka message push
+		self._init_kafka(*args, **kwargs)
 
 	def orthanc_objectjson(self, c):
 		'''	Serialize comment to JSON, add user details to response
@@ -76,13 +90,33 @@ class CommentBaseManagementView(AdminUserLookupMixin, UserContextMixin, Resource
 		self.init_user_context(self.request)
 		return self.model(**{ 'uid': str(uuid.uuid4()), self.model.resource_foreignkey_attr: ruid, 'user': self.user.pk })
 
+	def save_object_data(self, session, form_instance, *args, **kwargs):
+		# Save to db
+		obj = super().save_object_data(session, form_instance)
 
-class CommentBaseRestView(AdminUserLookupMixin, UserContextMixin, ResourceChildBaseRestView):
+		if self.kafka_topic:
+			self.send_kafka_msg(session, obj)
+
+		return obj
+
+
+class CommentBaseRestView(KafkaMixin, AdminUserLookupMixin, UserContextMixin, ResourceChildBaseRestView):
 	'''	REST endpoint which can be used to get, put, and delete comment instances associated with a resource model
 	'''
 	resource_cachemodel = None
 	model = None
 	modelform = CommentValidationForm
+
+	sonador_manager_required_kafka = False
+	kafka_topic_required = False
+
+	def setup(self, output, uri, request, *args, **kwargs):
+		'''	Setup worklist management view
+		'''
+		super().setup(output, uri, request, *args, **kwargs)
+
+		# Initialize Kafka message push
+		self._init_kafka(*args, **kwargs)
 
 	def orthanc_objectjson(self, c):
 		'''	Serialize comment to JSON, add user details to response
@@ -131,20 +165,34 @@ class CommentBaseRestView(AdminUserLookupMixin, UserContextMixin, ResourceChildB
 		self.init_user_context(self.request)
 		form_kwargs['request_user'] = self.user
 		return form_kwargs
+	
+	def save_object_data(self, session, obj, form_instance, *args, **kwargs):
+		# Save to db
+		obj = super().save_object_data(session, obj, form_instance)
 
+		if self.kafka_topic:
+			self.send_kafka_msg(session, obj)
+
+		return obj
 
 
 # Series Comments Views
 
+class KafkaSeriesCommentMixin:
+	''' Kafka Mixin which provides fetch_kafka_data for series comments
+	'''
+	def fetch_kafka_data(self, session, obj, *args, **kwargs):
+		return get_series_comment_kafka_data(self.sonador_manager, obj.series.uid, obj.uid)
 
-class CommentSeriesManagementView(CommentBaseManagementView):
+
+class CommentSeriesManagementView(KafkaSeriesCommentMixin, CommentBaseManagementView):
 	''' REST endpoint which can be used to get and add on to the Comments list for series
 	'''
 	resource_cachemodel = CacheSeries
 	model = ImagingSeriesComment
 
 
-class CommentSeriesRestView(CommentBaseRestView):
+class CommentSeriesRestView(KafkaSeriesCommentMixin, CommentBaseRestView):
 	'''	REST endpoint which can be used to get, put, and delete a specified comment from a series
 	'''
 	resource_cachemodel = CacheSeries
@@ -184,17 +232,23 @@ class CommentSeriesDICOMRestView(DicomUidJsonMixin, DicomResourceMixin, CommentS
 		self._init_dicom_json(*args, **kwargs)
 
 
-
 # Study Comment Views
 
-class CommentStudyManagementView(CommentBaseManagementView):
+class KafkaStudyCommentMixin:
+	''' Kafka Mixin which provides fetch_kafka_data for study comments
+	'''
+	def fetch_kafka_data(self, session, obj, *args, **kwargs):
+		return get_study_comment_kafka_data(self.sonador_manager, obj.study.uid, obj.uid)
+
+
+class CommentStudyManagementView(KafkaStudyCommentMixin, CommentBaseManagementView):
 	''' REST endpoint which can be used to that get, put, and delete a specified comment from a study
 	'''
 	resource_cachemodel = CacheStudy
 	model = ImagingStudyComment
 
 
-class CommentStudyRestView(CommentBaseRestView):
+class CommentStudyRestView(KafkaStudyCommentMixin, CommentBaseRestView):
 	''' REST endpoint which can be used to that get, put, and delete a specified comment from a study
 	'''
 	resource_cachemodel = CacheStudy
@@ -216,7 +270,6 @@ class CommentStudyDICOMManagementView(DicomUidJsonMixin, DicomResourceMixin, Com
 		r = kwargs.get('resource') or self.get_resource(session, ruid=ruid)
 		_comments = session.query(self.model).filter_by(study_id=r.publicid)
 
-		# Retrieve user details for the comments
 		_user_uids = set([c.user for c in _comments])
 		if _user_uids:
 			setattr(self, 'user_collection', self.sonador_user_lookup(_user_uids))
@@ -232,3 +285,23 @@ class CommentStudyDICOMRestView(DicomUidJsonMixin, DicomResourceMixin, CommentSt
 	def setup(self, output, uri, request, *args, **kwargs):
 		super().setup(output, uri, request, *args, **kwargs)
 		self._init_dicom_json(*args, **kwargs)
+
+
+def init_comments(orthanc_conf, sonador_manager, OrthancSession, *args, **kwargs):
+	''' Initialize comment REST endpoints
+	'''
+	import orthanc
+
+	if getattr(sonador_manager, "kafka_producer", None) and getattr(sonador_manager.kafka_producer, "topic", None):
+		kafka_topic = sonador_manager.kafka_producer.topic
+	else:
+		kafka_topic = None
+
+	orthanc.RegisterRestCallback(r'/series/([0-9a-fA-F]{8}\-?){5}/comments',
+		CommentSeriesManagementView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession, kafka_topic=kafka_topic))
+	orthanc.RegisterRestCallback(r'/series/([0-9a-fA-F]{8}\-?){5}/comments/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
+		CommentSeriesRestView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession, kafka_topic=kafka_topic))
+	orthanc.RegisterRestCallback(r'/studies/([0-9a-fA-F]{8}\-?){5}/comments',
+		CommentStudyManagementView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession, kafka_topic=kafka_topic))
+	orthanc.RegisterRestCallback(r'/studies/([0-9a-fA-F]{8}\-?){5}/comments/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
+		CommentStudyRestView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession, kafka_topic=kafka_topic))

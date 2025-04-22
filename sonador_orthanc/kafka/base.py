@@ -58,7 +58,6 @@ class SonadorProducer:
 	def poll(self, *args, **kwargs):
 		return self.producer.poll(*args, **kwargs)
 
-
 class KafkaMixin:
 	''' Mixin class that initializes the Kafka context for a web view. Provides
 		methods for serializing and sending data to Kafka.

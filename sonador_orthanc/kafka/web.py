@@ -75,7 +75,7 @@ class OrthancKafkaExportView(KafkaMixin, UserContextMixin, ResourceUidMixin, Ort
 			to ensure that the UID parsed from the URL is correct. Raises DoesNotExist
 			if the method is unable to locate a matching instances. (Delegates to get_resource.)
 		'''
-		return self.get_resource(session, *args, **kwargs)		
+		return self.get_resource(session, *args, **kwargs)
 
 	def fetch_kafka_data(self, output, uri, request, *args, **kwargs):
 		'''	Retrieve resource, aggregate data, and prepare data to send to Kafka
@@ -168,3 +168,46 @@ class OrthancKafkaExportView(KafkaMixin, UserContextMixin, ResourceUidMixin, Ort
 			return self.send_response(json.dumps({
 				'error': str(err), gcapicodes.STATUS: gcapicodes.FAIL,
 			}, cls=self.json_cls), status_code=self.server_error_status_code)
+		
+
+class OrthancChildKafkaExportView(OrthancKafkaExportView):
+	''' 
+	'''
+	kafka_json = None
+	model = None
+
+	def setup(self, output, uri, request, *args, **kwargs):
+		super().setup(output, uri, request, *args, **kwargs)
+
+		if not callable(self.kafka_json):
+			raise ValueError("Unable to initiliaze %s view, invalid kafka json method"
+					% type(self).__name__)
+
+	def get_object_uid(self, *args, sep='/', **kwargs):
+		'''	Retrieve the UID of the child object from the URL
+		'''
+		return self.uri.split(sep)[-2]
+
+	def get_object(self, session, *args, rid=None, cid=None, **kwargs):
+		'''	Retrieve object instance: performs a lookup query against the database
+			to ensure that the UID parsed from the URL is correct. Raises DoesNotExist
+			if the method is unable to locate a matching instances. (Delegates to get_resource.)
+		'''
+		r = kwargs.get('resource') or self.get_resource(session, ruid=rid)
+		cid = cid or self.get_object_uid(*args, **kwargs)
+
+		obj = session.query(self.model).filter_by(**{ self.model.resource_foreignkey_attr: r.publicid, 'uid': cid }).first()
+
+		if not obj:
+			raise ResourceDoesNotExist('Unable to retrieve %s ID=%s for %s=%s' % (
+				self.model.__name__, cid, self.resource_model.type, rid))
+		
+		return obj
+
+	def fetch_kafka_data(self, output, uri, request, *args, **kwargs):
+		'''	Retrieve resource, aggregate data, and prepare data to send to Kafka
+		'''
+		# Retrieve resource
+		with self.sessionmaker() as session:
+			obj = self.get_object(session, *args, **kwargs)
+			return self.kafka_json(session, obj)
