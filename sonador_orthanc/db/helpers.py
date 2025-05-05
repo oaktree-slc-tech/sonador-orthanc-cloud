@@ -1,6 +1,7 @@
 import copy, re, fnmatch, logging, datetime
 
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, aliased
+from sqlalchemy import and_
 
 from client.utils.object import pick
 
@@ -9,7 +10,9 @@ from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_
 	DCMHEADER_INSTITUTION_NAME, DCMHEADER_MANUFACTURER, DCMHEADER_MANUFACTER_MODEL_NAME, DCMHEADER_SOFTWARE_VERSIONS, \
 	DCMHEADER_MODALITIES_IN_STUDY, DCM_QUERY_NULL, DCM_QUERY_NOT_NULL, \
 	IMAGING_SERVER_MAINDICOM, IMAGING_SERVER_PATIENT_MAINDICOM, IMAGING_SERVER_STABLE, \
-	IMAGING_SERVER_PARENT_PATIENT, IMAGING_SERVER_PARENT_STUDY, IMAGING_SERVER_DCM_TAG, IMAGING_SERVER_DCM_TAG_VALUE
+	IMAGING_SERVER_PARENT_PATIENT, IMAGING_SERVER_PARENT_STUDY, IMAGING_SERVER_PARENT_SERIES, \
+	IMAGING_SERVER_SERIES_INDEX, IMAGING_SERVER_FILE_SIZE, IMAGING_SERVER_FILE_UUID, \
+	IMAGING_SERVER_DCM_TAG, IMAGING_SERVER_DCM_TAG_VALUE
 
 from .. import apisettings as sonador_api
 from .internal import Resource, DicomIdentifiers
@@ -88,7 +91,32 @@ def dcmuid_fetch_dicomidentifier_model(session, ruid, dicom_identifiers_model=Di
 		.options(joinedload(dicom_identifiers_model.resource)) \
 		.filter_by(value=ruid).first()
 
-	
+
+def cache_index_missing_resources(session, resource_model, **kwargs):
+	''' Retrieve resource records which have not yet been imported into the provided Sonador
+		Resource Cache model. An "anti-join" ( alef outer join where the right hand is NULL)
+		is used to scan and retrieve the missing resources.
+
+		@input session (SQLAlchemy Session instance): session instance to be used
+			to execute the query.
+		@input resource_model: Cache resource model for which the Resource records should
+			be queried.
+	'''
+	return session.query(Resource).outerjoin(resource_model, Resource.publicid == resource_model.uid) \
+		.filter(and_(Resource.resourcetype == resource_model.code, resource_model.uid == None))
+
+
+def cache_index_ghosts(session, resource_model, **kwargs):
+	'''	Return "ghost" entries for the provided resource model. Ghost entries are resource
+		rows present in the cache, but have been removed from the Orthanc Resource table
+		and as a result are no longer available on the server.
+
+		@input session (SQLAlchemy Session instance): session instance to be used
+			to execute the query.
+		@input resource_model: Cache resource model for which ghosted entries should be found.
+	'''
+	return session.query(resource_model).outerjoin(Resource, resource_model.uid == Resource.publicid) \
+		.filter(and_(Resource.resourcetype == resource_model.code, Resource.publicid == None))
 
 
 # Orthanc JSON Serialization Methods
@@ -155,6 +183,25 @@ def cache_orthanc_seriesjson(cseries, resource_type=None):
 		dcm[IMAGING_SERVER_STABLE] = cseries.stable
 	if cseries.mtime:
 		dcm[IMAGING_SERVER_LAST_UPDATE] = cseries.mtime
+
+	return dcm
+
+
+def cache_orthanc_instancejson(cinstance, resource_type=None):
+	'''	Create Orthanc JSON structure for the provided cache instance.
+	'''
+	if getattr(cinstance, 'privatetags', None):
+		dcmtags_main = copy.deepcopy(cinstance.orthanc)
+		dcmtags_main = copy.update(cstudy.privatetags.orthanc)
+	else: dcmtags_main = cinstance.orthanc
+
+	dcm = { 'ID': cinstance.uid, IMAGING_SERVER_MAINDICOM: dcmtags_main, 'Type': resource_type or cinstance.type }
+	if cinstance.parent_id:
+		dcm[IMAGING_SERVER_PARENT_SERIES] = cinstance.parent_id
+	if cinstance.file_uid:
+		dcm[IMAGING_SERVER_FILE_UUID] = cinstance.file_uid
+	if cinstance.file_size:
+		dcm[IMAGING_SERVER_FILE_SIZE] = cinstance.file_size
 
 	return dcm
 

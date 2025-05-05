@@ -10,17 +10,16 @@ from sonador.apisettings import IMAGING_SERVER_LEVEL, IMAGING_SERVER_WILDCARD, I
 from sonador.serialization import SonadorJsonEncoder
 from sonador.servers.auth import SonadorUser, SonadorGroupCollection, ACL_PERM_QUERY
 
-from ..dcmquery.auth import PatientResourceAclMixin, StudyResourceAclMixin, SeriesResourceAclMixin
+from ...dcmquery.auth import PatientResourceAclMixin, StudyResourceAclMixin, SeriesResourceAclMixin
+from ...web.base  import OrthancBaseView
+from ...web.secure_user import UserContextMixin
 
-from .base  import OrthancBaseView
-from .cache import CacheBaseView
-from .secure_user import UserContextMixin
+from .base import CacheBaseView
 from .patient import CachePatientQueryView
 from .study import CacheStudyQueryView
 from .series import CacheSeriesQueryView
 
 logger = logging.getLogger(__name__)
-
 
 
 class SecureResourceQueryViewMixin:

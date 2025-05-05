@@ -14,14 +14,14 @@ from ..db.distortionfilter import DistortionFilterDevice
 from ..db.helpers import orthanc_devicejson
 from ..db.cache import CacheSeries, CacheStudy
 
-from ..web.base import OrthancBaseView
-from ..web.helpers import paginate_query_results
-from ..web.ext import ObjectManagementView, ObjectRestView
-
 from ..validation.base import OrthancViewValidationMixin
 from ..validation.distortionfilter import DistortionFilterDeviceValidationForm
 
-from .cache import CacheBaseView, ResourceUidMixin
+from ..cache.web import CacheBaseView, ResourceUidMixin
+
+from .base import OrthancBaseView
+from .helpers import paginate_query_results
+from .ext import ObjectManagementView, ObjectRestView
 from .dicomweb import DicomResourceMixin, DicomUidJsonMixin
 
 logger = logging.getLogger(__name__)

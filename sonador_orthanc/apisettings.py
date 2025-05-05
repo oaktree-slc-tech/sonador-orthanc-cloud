@@ -31,16 +31,24 @@ SONADOR_CACHE_OPCODE_INDEX_STUDY = 'index-study'
 SONADOR_CACHE_OPCODE_INDEX_DELETE_STUDY = 'index-delete-study'
 SONADOR_CACHE_OPCODE_INDEX_SERIES = 'index-series'
 SONADOR_CACHE_OPCODE_INDEX_DELETE_SERIES = 'index-delete-series'
+SONADOR_CACHE_OPCODE_INDEX_IMAGE = 'index-instance'
+SONADOR_CACHE_OPCODE_INDEX_DELETE_IMAGE = 'index-delete-instance'
 
 # Sonador Cache Response Codes
 SONADOR_CACHE_COUNT_PATIENT = 'patient-count'
 SONADOR_CACHE_COUNT_STUDY = 'study-count'
 SONADOR_CACHE_COUNT_SERIES = 'series-count'
+SONADOR_CACHE_COUNT_INSTANCES = 'instances-count'
 
 
 # Private DICOM Tags
 SONADOR_CONF_PRIVATE_TAGS = 'PrivateMainDicomTags'
 SONADOR_CONF_DATETIME_TAGS = 'DicomExtDatetime'
+
+
+# Cache Settings
+SONADOR_CONF_CACHE = 'Cache'
+SONADOR_CONF_CACHE_THREADS_COUNT = 'CacheThreadsCount'
 
 
 # Query Request Components

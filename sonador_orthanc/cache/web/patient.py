@@ -19,13 +19,13 @@ from sonador.serialization import dcm_str2date, SonadorJsonEncoder
 
 from sonador_orthanc_common.servers import ResponseLikeObject, local_orthanc_apiurl
 
-from ..apisettings import SONADOR_CACHE_ORDER_BY
-from ..db.cache import CachePatient, CacheStudy, CacheSeries
-from ..db.helpers import cache_orthanc_patientjson
-from ..dcmquery.patient import CachePatientQueryMixin
+from ...apisettings import SONADOR_CACHE_ORDER_BY
+from ...db.cache import CachePatient, CacheStudy, CacheSeries
+from ...db.helpers import cache_orthanc_patientjson
+from ...dcmquery.patient import CachePatientQueryMixin
 
-from .queryview import DicomQueryBaseView
-from .resource import SonadorResourceBaseView
+from ...web.queryview import DicomQueryBaseView
+from ...web.resource import SonadorResourceBaseView
 
 logger = logging.getLogger(__name__)
 

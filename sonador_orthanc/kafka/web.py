@@ -16,8 +16,8 @@ from sonador.serialization import SonadorJsonEncoder
 from ..apisettings import SONADOR_KAFKA_REQUEST_DATA
 from ..db.internal import Resource, ORTHANCDB_INSTANCE_TYPE
 from ..web.base import OrthancBaseView
-from ..web.cache import ResourceUidMixin
 from ..web.secure_user import UserContextMixin
+from ..cache.web import ResourceUidMixin
 
 from .base import KafkaMixin
 from .resource import fetch_kafka_resource_data, kafka_instance_msg
