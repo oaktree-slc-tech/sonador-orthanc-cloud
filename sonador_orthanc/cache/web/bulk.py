@@ -7,17 +7,21 @@ from sqlalchemy import or_, and_
 import client.apisettings as gcapicodes
 from client.errors import ConfigurationError
 from client.utils.object import omit
+from client.utils.conversion import str2bool
 
+from sonador.apisettings import IMAGING_SERVER_INCLUDE_INSTANCES
 from sonador.serialization import SonadorJsonEncoder
 from sonador.servers.auth import SonadorUser, SonadorGroupCollection, ACL_PERM_QUERY
 
-from ..db.cache import CachePatient, CacheStudy, CacheSeries
-from ..db.helpers import cache_orthanc_patientjson, cache_orthanc_studyjson, cache_orthanc_seriesjson
+from ...db.cache import CachePatient, CacheStudy, CacheSeries, CacheInstance
+from ...db.helpers import cache_orthanc_patientjson, cache_orthanc_studyjson, cache_orthanc_seriesjson, \
+	cache_orthanc_instancejson
 
-from ..dcmquery.auth import PatientResourceAclMixin, StudyResourceAclMixin, SeriesResourceAclMixin
+from ...dcmquery.auth import PatientResourceAclMixin, StudyResourceAclMixin, SeriesResourceAclMixin
 
-from .base import OrthancBaseView
-from .secure_user import UserContextMixin
+from ...web.base import OrthancBaseView
+from ...web.secure_user import UserContextMixin
+
 from .secure_search import SecureResourceQueryViewMixin
 
 logger = logging.getLogger(__name__)
@@ -53,24 +57,38 @@ class CacheFetchBulkContentView(OrthancBaseView):
 		elif isinstance(cresource, CachePatient):
 			return cache_orthanc_patientjson(cresource)
 
+		elif isinstance(cresource, CacheInstance):
+			return cache_orthanc_instancejson(cresource)
+
 		raise TypeError(
 			'Unable to create JSON structure for resource. "%s" is not a valid resoure type.' % type(cresource))
 
 	def filter_patient_resources(self, session, *args, **kwargs):
 		'''	Retrieve patient instances
 		'''
-		return session.query(CachePatient).filter(CachePatient.uid.in_(self.resources))
+		return session.query(CachePatient).options(joinedload(CachePatient.privatetags)) \
+			.filter(CachePatient.uid.in_(self.resources))
 
 	def filter_study_resources(self, session, *args, **kwargs):
 		'''	Retrieve study instances
 		'''
-		return session.query(CacheStudy).options(joinedload(CacheStudy.parent)) \
+		return session.query(CacheStudy).options(joinedload(CacheStudy.parent), joinedload(CacheStudy.privatetags)) \
 			.filter(CacheStudy.uid.in_(self.resources))
 
 	def filter_series_resources(self, session, *args, **kwargs):
 		'''	Retrieve series instances
 		'''	
-		return session.query(CacheSeries).filter(CacheSeries.uid.in_(self.resources))
+		return session.query(CacheSeries).options(joinedload(CacheSeries.privatetags)) \
+			.filter(CacheSeries.uid.in_(self.resources))
+
+	def filter_instance_resources(self, session, series_uids, *args, **kwargs):
+		'''	Retrieve DICOM instance data
+
+			@input session (SQLAlchemy session): session to be used for executing the query
+			@input series_uids (iterable of series UIDs): UIDs for which the instances should be retrieved
+		'''
+		return session.query(CacheInstance).options(joinedload(CacheInstance.privatetags)) \
+			.filter(CacheInstance.parent_id.in_(series_uids))
 
 	def post(self, output, uri, request, *args, **kwargs):
 		'''	Retrieve the list of resources requested
@@ -83,15 +101,23 @@ class CacheFetchBulkContentView(OrthancBaseView):
 			cstudy_resources = self.filter_study_resources(session, *args, **kwargs)
 			cseries_resources = self.filter_series_resources(session, *args, **kwargs)
 
-			# Index resource by resource ID
+			# Index resource by resource ID: patient, studdy, series
 			for rtype_results in (cpatient_resources, cstudy_resources, cseries_resources):
 				for r in rtype_results:
 					orthanc_resources[r.uid] = r
 
+			# Serialize primary response to JSON
+			rjson = [self.orthanc_resourcejson(orthanc_resources.get(r)) for r in self.resources if orthanc_resources.get(r)]
+
+			# If requested, add DICOM instances to the response
+			if self.POST.get(IMAGING_SERVER_INCLUDE_INSTANCES) and str2bool(self.POST.get(IMAGING_SERVER_INCLUDE_INSTANCES)):
+				
+				# Retrieve series instances and generate JSON response from cache
+				for dcm in self.filter_instance_resources(session, [sx.uid for sx in cseries_resources]).all():
+					rjson.append(self.orthanc_resourcejson(dcm))
+
 			# Sort results in the order they were requested in the request and serialize to JSON
-			return self.send_response(json.dumps(
-				[self.orthanc_resourcejson(orthanc_resources.get(r)) for r in self.resources if orthanc_resources.get(r)],
-				cls=SonadorJsonEncoder))
+			return self.send_response(json.dumps(rjson, cls=SonadorJsonEncoder))
 
 
 class SecureResourceAclPolicyQueryHelperBase:

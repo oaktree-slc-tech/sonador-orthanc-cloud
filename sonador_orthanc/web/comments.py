@@ -21,8 +21,9 @@ from ..db.internal import DicomIdentifiers
 from ..kafka.resource import get_study_comment_kafka_data, get_series_comment_kafka_data
 from ..kafka.base import KafkaMixin
 
+from ..cache.web import ResourceUidMixin
+
 from .base import OrthancBaseView
-from .cache import ResourceUidMixin
 from .dicomweb import DicomResourceMixin, DicomUidJsonMixin
 from .ext import ResourceChildManagementBaseView, ResourceChildBaseRestView
 from .secure_user import UserContextMixin, AdminUserLookupMixin

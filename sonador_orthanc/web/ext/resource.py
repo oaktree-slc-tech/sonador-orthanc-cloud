@@ -27,8 +27,9 @@ from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_
 	IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_IMAGE, DCMHEADER_SERIES_INSTANCE_UID
 from sonador.serialization import SonadorJsonEncoder
 
+from ...cache.web import ResourceUidMixin
+
 from ..base import OrthancBaseView
-from ..cache import ResourceUidMixin
 
 from .base import ObjectViewMixin, ObjectManagementBaseView, ObjectBaseRestView
 

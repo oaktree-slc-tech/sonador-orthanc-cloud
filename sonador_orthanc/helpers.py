@@ -11,7 +11,7 @@ from sonador.imaging.orthanc import ImagingPatient, ImagingStudy, ImagingSeries
 
 from sonador_orthanc_common.apisettings import ORTHANC_SERVER_ID
 from sonador_orthanc_common.helpers import init_sonador_server, \
-	orthancserver_get_patient, orthancserver_get_study, orthancserver_get_series, \
+	orthancserver_get_patient, orthancserver_get_study, orthancserver_get_series, orthancserver_get_instance, \
 	orthancserver_sync_modalities, orthancserver_sync_dcmweb_remotes
 
 from .apisettings import ORTHANC_MAINDICOM_TAGS_DEFAULT, ORTHANC_CONFIG_SECTION_EXTRADICOMTAGS, \

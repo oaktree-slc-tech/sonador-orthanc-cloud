@@ -25,15 +25,12 @@ from ..db.cache import CachePatient, CacheStudy, CacheSeries
 from ..db.helpers import dcmquery2psqlregex, dcmuid_fetch_dicomidentifier_model
 from ..dcmquery.auth import StudyResourceAclMixin
 
+from ..cache.web import ResourceBaseMixin
+from ..cache.web.study import CacheStudyListBaseView
+from ..cache.web.secure_search import SecureResourceQueryViewMixin
+
 from .base import OrthancBaseView
-from .study import CacheStudyListBaseView
-from .cache import ResourceBaseMixin
 from .secure_user import UserContextMixin
-from .secure_search import SecureResourceQueryViewMixin
-
-from ..dcmquery.auth import StudyResourceAclMixin
-
-from ..dcmquery.auth import StudyResourceAclMixin
 
 logger = logging.getLogger(__name__)
 

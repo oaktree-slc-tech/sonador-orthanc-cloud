@@ -16,13 +16,13 @@ from sonador.apisettings import \
 from sonador.imaging.helpers.conversion import json2dcmjson
 from sonador.serialization import dcm_str2date, SonadorJsonEncoder
 
-from ..apisettings import SONADOR_CACHE_ORDER_BY
-from ..db.cache import CachePatient, CacheStudy, CacheSeries
-from ..db.helpers import cache_orthanc_seriesjson
-from ..dcmquery import CacheSeriesQueryMixin
+from ...apisettings import SONADOR_CACHE_ORDER_BY
+from ...db.cache import CachePatient, CacheStudy, CacheSeries
+from ...db.helpers import cache_orthanc_seriesjson
+from ...dcmquery import CacheSeriesQueryMixin
 
-from .queryview import DicomQueryBaseView
-from .resource import SonadorResourceBaseView
+from ...web.queryview import DicomQueryBaseView
+from ...web.resource import SonadorResourceBaseView
 
 logger = logging.getLogger(__name__)
 

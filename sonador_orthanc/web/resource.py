@@ -8,8 +8,9 @@ from sonador.serialization import SonadorJsonEncoder
 
 from sonador_orthanc_common.servers import ResponseLikeObject, local_orthanc_apiurl
 
+from ..cache.web import ResourceBaseMixin
 from .base import OrthancBaseView
-from .cache import ResourceBaseMixin
+
 
 logger = logging.getLogger(__name__)
 
