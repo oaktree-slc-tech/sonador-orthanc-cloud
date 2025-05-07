@@ -172,6 +172,19 @@ class ObjectManagementBaseView(OrthancViewValidationMixin, ObjectViewMixin, Orth
 
 			return self.http404_resource_not_found(response=response)
 
+	def validate_form_data(self, session, *args, **kwargs):
+		'''	Validate request data using the view model form
+		'''
+		return self.modelform.clean(**{
+			**self.POST, **self.modelform_kwargs(session=session, create=True, **kwargs)
+		})
+		
+	def save_object_data(self, session, form_instance, *args, **kwargs):
+		'''	Save object model data
+		'''
+		return form_instance.save(
+			session, self.init_object_model(**self.init_object_kwargs(*args, session=session, **kwargs)))
+
 	def post(self, output, uri, request, *args, **kwargs):
 		''' Create new child object for the resource
 		'''	
@@ -179,9 +192,8 @@ class ObjectManagementBaseView(OrthancViewValidationMixin, ObjectViewMixin, Orth
 			with self.sessionmaker() as session:
 
 				# Create child model instance
-				obj = self.modelform.clean(**{
-						**self.POST, **self.modelform_kwargs(session=session, create=True, **kwargs),
-					}).save(session, self.init_object_model(**self.init_object_kwargs(*args, session=session, **kwargs)))
+				form_instance = self.validate_form_data(session, *args, **kwargs)
+				obj = self.save_object_data(session, form_instance, *args, **kwargs)
 
 				return self.send_response(json.dumps({
 					self.model_pk_attr: obj.uid, gcapicodes.STATUS: gcapicodes.SUCCESS,
@@ -315,6 +327,14 @@ class ObjectBaseRestView(OrthancViewValidationMixin, ObjectViewMixin, OrthancBas
 			self.model_pk_attr: obj.uid,
 			gcapicodes.STATUS: gcapicodes.SUCCESS,
 		}
+		
+	def validate_form_data(self, session, obj, *args, **kwargs):
+		return self.modelform.clean(**{
+			**self.POST, **self.modelform_kwargs(session=session, obj=obj, update=True, **kwargs)
+		})
+  
+	def save_object_data(self, session, obj, form_instance):
+		return form_instance.save(session, obj)
 
 	def put(self, output, uri, request, *args, **kwargs):
 		''' Update object instance
@@ -326,9 +346,8 @@ class ObjectBaseRestView(OrthancViewValidationMixin, ObjectViewMixin, OrthancBas
 				obj = self.get_object(session, **self.get_object_kwargs(*args, session=session, **kwargs))
 
 				# Parse/validate request, update model properties, commit to database
-				self.modelform.clean(**{
-						**self.POST, **self.modelform_kwargs(session=session, obj=obj, update=True, **kwargs)
-					}).save(session, obj)
+				_form = self.validate_form_data(session, obj, **kwargs)
+				obj = self.save_object_data(session, obj, _form)
 
 				return self.send_response(json.dumps(
 					self.update_response_json(obj, *args, **kwargs), cls=self.json_cls))

@@ -18,15 +18,15 @@ from sonador.serialization import dcm_str2date, SonadorJsonEncoder
 from sonador_orthanc_common.apisettings import ORTHANC_API_REQUESTED_TAGS_QUERY_PARAM, ORTHANC_API_REQUESTED_TAGS_QUERY_PARAM_SEP
 from sonador_orthanc_common.servers import ResponseLikeObject, local_orthanc_apiurl
 
-from ..apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, ORTHANC_CONFIG_SECTION_POSTGRES, \
+from ...apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, ORTHANC_CONFIG_SECTION_POSTGRES, \
 	ORTHANC_CONFIG_SECTION_EXTRADICOMTAGS, ORTHANC_MAINDICOM_TAGS_DEFAULT, SONADOR_CACHE_ORDER_BY, \
 	SONADOR_CACHE_TAGS_URL
-from ..db.cache import CachePatient, CacheStudy, CacheSeries
-from ..db.helpers import cache_orthanc_studyjson
-from ..dcmquery import CacheStudyQueryMixin
+from ...db.cache import CachePatient, CacheStudy, CacheSeries
+from ...db.helpers import cache_orthanc_studyjson
+from ...dcmquery import CacheStudyQueryMixin
 
-from .queryview import DicomQueryBaseView
-from .resource import SonadorResourceBaseView
+from ...web.queryview import DicomQueryBaseView
+from ...web.resource import SonadorResourceBaseView
 
 logger = logging.getLogger(__name__)
 

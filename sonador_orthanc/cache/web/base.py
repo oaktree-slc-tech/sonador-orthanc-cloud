@@ -12,26 +12,29 @@ from client.utils.conversion import str2bool
 from client.utils.object import omit, pick
 
 from sonador.apisettings import IMAGING_SERVER_UID_REGEX, DICOM_UID_REGEX, \
-	IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES
+	IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES, \
+	IMAGING_SERVER_RESOURCE_IMAGE
 from sonador.serialization import SonadorJsonEncoder
 
-from ..apisettings import \
+from ...apisettings import \
 	SONADOR_CACHE_STATUS_CURRENT, SONADOR_CACHE_STATUS_INCOMPLETE, SONADOR_CACHE_OPCODE_INDEX_RESOURCES, \
 	SONADOR_CACHE_OPCODE_INDEX_PATIENT, SONADOR_CACHE_OPCODE_INDEX_STUDY, SONADOR_CACHE_OPCODE_INDEX_SERIES, \
+	SONADOR_CACHE_OPCODE_INDEX_IMAGE, \
 	SONADOR_CACHE_OPCODE_INDEX_DELETE_PATIENT, SONADOR_CACHE_OPCODE_INDEX_DELETE_STUDY, \
-	SONADOR_CACHE_OPCODE_INDEX_DELETE_SERIES, \
-	SONADOR_CACHE_COUNT_PATIENT, SONADOR_CACHE_COUNT_STUDY, SONADOR_CACHE_COUNT_SERIES
-from ..db.base import DbBase
-from ..db.cache import CacheSeries, CacheStudy, CachePatient
-from ..db.internal import Resource, DicomIdentifiers, \
-    ORTHANCDB_PATIENT_TYPE, ORTHANCDB_STUDY_TYPE, ORTHANCDB_SERIES_TYPE
-from ..db.comments import ImagingSeriesComment
+	SONADOR_CACHE_OPCODE_INDEX_DELETE_SERIES, SONADOR_CACHE_OPCODE_INDEX_DELETE_IMAGE, \
+	SONADOR_CACHE_COUNT_PATIENT, SONADOR_CACHE_COUNT_STUDY, SONADOR_CACHE_COUNT_SERIES, SONADOR_CACHE_COUNT_INSTANCES
+from ...db.base import DbBase
+from ...db.cache import CacheInstance, CacheSeries, CacheStudy, CachePatient
+from ...db.internal import Resource, DicomIdentifiers, \
+    ORTHANCDB_PATIENT_TYPE, ORTHANCDB_STUDY_TYPE, ORTHANCDB_SERIES_TYPE, ORTHANCDB_INSTANCE_TYPE
+from ...db.comments import ImagingSeriesComment
 
-from ..tasks.maintenance import cache_bulk_index_patients, cache_bulk_index_studies, cache_bulk_index_series, \
-	cache_index_patient, cache_index_study, cache_index_series, remove_cache_resource
+from ...tasks.maintenance import cache_bulk_index_patients, cache_bulk_index_studies, cache_bulk_index_series, \
+	cache_index_patient, cache_index_study, cache_index_series, cache_index_instance, remove_cache_resource, \
+	cache_bulk_index_instances
 
-from .base import OrthancBaseView
-from .helpers import paginate_query_results
+from ...web.base import OrthancBaseView
+from ...web.helpers import paginate_query_results
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +55,20 @@ IMAGING_CACHE_RESOURCES = {
 		'code': ORTHANCDB_SERIES_TYPE, 'index_method': cache_index_series,
 		'code_delete': SONADOR_CACHE_OPCODE_INDEX_DELETE_SERIES,
 	},
+	CacheInstance: {
+		'type': IMAGING_SERVER_RESOURCE_IMAGE, gcapicodes.OPCODE: SONADOR_CACHE_OPCODE_INDEX_IMAGE,
+		'code': ORTHANCDB_INSTANCE_TYPE, 'index_method': cache_index_instance,
+		'code_delete': SONADOR_CACHE_OPCODE_INDEX_DELETE_IMAGE,
+	}
 }
 
 
 class CacheBaseView(OrthancBaseView):
 	'''	Base class for cache based views
+
+		@attr sonador_manager (Sonador Manager instance): Orthanc Sonador mangaer instance
+        @attr sessionmaker (SQLAlchemy sessionmaker class): session maker instance to be
+            used for creating database connections/sessions.
 	'''
 	sonador_manager = None
 	sessionmaker = None
@@ -79,9 +91,16 @@ class CacheBaseView(OrthancBaseView):
 
 class ResourceBaseMixin(object):
 	''' Mixin which provids methods to parse URLs and retrieve resources from the Orthanc database.
+
+		@attr resource_type (str): resource type provided by the mixin
+		@attr resource_code (int): numeric code used by the resource within the database
 	'''
 	resource_uid_regex = IMAGING_SERVER_UID_REGEX
 	resource_model = Resource
+
+	# Resource identifiers: string (API) and numeric (database) identifiers
+	resource_type = None
+	resource_code = None
 
 	def init_resource_mixin(self, *args, **kwargs):
 		'''	Verify that mixin properties, database models, and other attributes have been provided.
@@ -90,8 +109,8 @@ class ResourceBaseMixin(object):
 			raise ConfigurationError(
 				'Unable to initialize %s view instance: invalid resource model' % type(self).__name__)
 		
-		self.resource_type = kwargs.get('resource_type')
-		self.resource_code = kwargs.get('resource_code')
+		self.resource_type = kwargs.get('resource_type', self.resource_type)
+		self.resource_code = kwargs.get('resource_code', self.resource_code)
 
 		if not self.resource_type:
 			raise ConfigurationError(
@@ -177,6 +196,14 @@ class CacheStatusBaseView(CacheBaseView):
 		'''
 		return {
 			'db': session.query(Resource).filter_by(resourcetype=ORTHANCDB_SERIES_TYPE).count(),
+			'cache': session.query(CacheSeries).count(),
+		}
+
+	def cache_status_instances_count(self, session):
+		'''	Retrieve status of instances tables in database and cache
+		'''
+		return {
+			'db': session.query(Resource).filter_by(resourcetype=ORTHANCDB_INSTANCE_TYPE).count(),
 			'cache': session.query(CacheSeries).count(),
 		}
 
@@ -517,6 +544,59 @@ class CacheBulkIndexSeriesView(CacheBulkIndexBaseView):
 			response[gcapicodes.STATUS] = gcapicodes.SUCCESS
 			with self.sessionmaker() as session:
 				response[SONADOR_CACHE_COUNT_SERIES] = self.cache_status_series_count(session)
+
+		else:
+			status_code = 500
+
+			response[gcapicodes.STATUS] = gcapicodes.FAIL
+			response[gcapicodes.ERROR] = '%s' % opresult.err
+
+		return self.send_response(json.dumps(response), status_code=status_code)
+
+
+class CacheBulkIndexInstancesView(CacheBulkIndexBaseView):
+	'''	REST endpoint which can be used to add DICOM instances to the Sonador cache.
+	'''
+	dcm_privatetags = None
+	dcm_datetags = None
+
+	def post(self, output, uri, request):
+		'''	Execute indexing operations for instances cache
+		'''
+		# Parse request and verify config
+		rdata = self.POST
+		logger.warning('Begin bulk index of instances. Requested config: %s' % rdata)
+		if not rdata.get(gcapicodes.OPCODE) == SONADOR_CACHE_OPCODE_INDEX_IMAGE:
+			return self.send_response(json.dumps({
+				gcapicodes.ERROR: 'Invalid %s request' % SONADOR_CACHE_OPCODE_INDEX_IMAGE
+			}), status_code=400)
+
+		response = { gcapicodes.OPCODE: SONADOR_CACHE_OPCODE_INDEX_IMAGE }
+		op_index_instances_complete = lambda opresult: logger.warning('Bulk index of instances data complete')		
+
+		# Kick off index operation as a worker process
+		if str2bool(rdata.get('async', True)):
+			response[gcapicodes.STATUS] = gcapicodes.INIT
+
+			op_index_instances = self.threadpool.submit(
+				cache_bulk_index_instances, self.sonador_manager, self.sessionmaker, batch_size=self.index_batch_size,
+				limit=self.limit, offset=self.offset)
+			op_indexseries.add_done_callback(op_index_instances_complete)
+
+			return self.send_response(json.dumps(response))
+
+		# Run index operation in foreground
+		opresult = cache_bulk_index_instances(self.sonador_manager, self.sessionmaker, batch_size=self.index_batch_size,
+			limit=self.limit, offset=self.offset)
+
+		# Add operation results to response
+		if opresult.success:
+			op_index_instances_complete(opresult)
+			status_code = 200
+
+			response[gcapicodes.STATUS] = gcapicodes.SUCCESS
+			with self.sessionmaker() as session:
+				response[SONADOR_CACHE_COUNT_INSTANCES] = self.cache_status_instances_count(session)
 
 		else:
 			status_code = 500

@@ -1,5 +1,7 @@
-import logging
+import logging, abc, json
 from confluent_kafka import Producer
+
+from sonador.serialization import SonadorJsonEncoder
 
 from ..apisettings import KAFKA_TIMEOUT_DEFAULT, ORTHANC_CONFIG_SECTION_SONADOR, SONADOR_CONF_KAFKA, \
 	SONADOR_CONF_KAFKA_SERVERS, SONADOR_CONF_KAFKA_TOPIC, SONADOR_KAFKA_BOOTSTRAP
@@ -55,3 +57,65 @@ class SonadorProducer:
 
 	def poll(self, *args, **kwargs):
 		return self.producer.poll(*args, **kwargs)
+
+class KafkaMixin:
+	''' Mixin class that initializes the Kafka context for a web view. Provides
+		methods for serializing and sending data to Kafka.
+		
+		@attr sonador_manager_required_kafka (bool, default=True): when set on the view instance
+			a check will be performed to ensure that a Sonador manager instance is available
+			and that the manager provides a Kafka producer instance
+		@attr sonador_manager (sonador_orthanc.manager.SonadorServerManager): server manager instance
+
+		@attr kafka_topic_required (bool, default=True): when set on the view instance
+			a check will be performed to ensure that a Kafka topic is available as part of
+			init/setup.
+		@attr kafka_topic (str, default=None): Kafka topic to which data should be sent
+		@attr json_cls (JSON encoder cls, default=SonadorJsonEncoder)
+	'''
+	sonador_manager_required_kafka = True
+	sonador_manager = None
+	
+	kafka_topic_required = True
+	kafka_topic = None
+	json_cls = SonadorJsonEncoder
+
+	def _init_kafka(self, *args, **kwargs):
+		self.kafka_topic = kwargs.get('kafka_topic', self.kafka_topic)
+		self.json_cls = kwargs.get('json_cls', SonadorJsonEncoder)
+
+		# Ensure that the Sonador manager instance is present and has a Kafka producer instance defined
+		if self.sonador_manager_required_kafka:
+
+			if self.sonador_manager is None:
+				raise ConfigurationError(
+					'Unable to initialize %s view to send data to Kafka: invalid Sonador manager instance' % type(self).__name__)
+
+			if not getattr(self.sonador_manager, 'kafka_producer', None):
+				raise ConfigurationError(('Unable to initialize %s view: Sonador manager instance does not have a Kafka producer '
+					+ 'associated with it.') % type(self).__name__)
+
+		# Ensure that a Kafka topic is associated with the view instance
+		if self.kafka_topic_required and not self.kafka_topic:
+			raise ConfigurationError('Unable to initiaze %s view, invalid kafka topic "%s"' % (type(self).__name__, self.kafka_topic))
+	
+	def send_kafka_msg(self, *args, **kwargs):
+		'''	Serialize and send message data to Kafka. IMPORTANT: the signature for the "send_kafka_msg"
+			method for a view instance should match that of `fetch_kafka_data`. The default method implementation
+			in this mixin forwards all arugments without making any changes.
+
+			@returns dict / JSON object: copy of the message payload sent to Kafka
+		'''
+		_kafka = self.fetch_kafka_data(*args, **kwargs)
+		self.sonador_manager.kafka_producer.send_msg(
+			json.dumps(_kafka, cls=self.json_cls), topic=self.kafka_topic)
+
+		return _kafka
+
+	@abc.abstractmethod
+	def fetch_kafka_data(self, *args, **kwargs):
+		'''	Abstract method to retrieve resource, aggregate data, and prepare Kafka data to send to Kafka.
+			Must be implemented in the view instance where the mixin is used.
+
+			@returns dict / JSON object
+		'''

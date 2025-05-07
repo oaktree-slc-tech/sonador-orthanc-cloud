@@ -20,7 +20,8 @@ from .. import apisettings as sonador_api
 from ..db.auth import UserPatientAuth, GroupPatientAuth, \
 	UserStudyAuth, GroupStudyAuth, \
 	UserSeriesAuth, GroupSeriesAuth
-from ..db.helpers import orthanc_auth_resourcejson
+from ..db.internal import Resource, DicomIdentifiers
+from ..db.helpers import orthanc_auth_resourcejson, dcmuid_fetch_dicomidentifier_model
 
 from ..web.base import OrthancBaseView
 from ..web.ext import ResourceChildManagementBaseView, ResourceChildBaseRestView
@@ -28,7 +29,8 @@ from ..web.dicomweb import DicomResourceMixin, DicomUidJsonMixin
 from ..web.secure_user import UserLookupMixin, GroupLookupMixin
 
 from ..validation.base import OrthancViewValidationMixin
-from ..validation.auth import AuthValidationForm, AuthExtendedValidationForm, SonadorResourceAuthorizationRequest
+from ..validation.auth import AuthValidationForm, AuthExtendedValidationForm, SonadorResourceAuthorizationRequest, \
+	RESOURCE_LEVEL_DB_MAPPING
 
 logger = logging.getLogger(__name__)
 
@@ -254,8 +256,11 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 				if IMAGING_SERVER_AUTHREQUEST_LEVEL_LOOKUP.get(_auth_request.level) and _auth_request.orthanc_id:
 					_rjson[IMAGING_SERVER_AUTHREQUEST_LEVEL_LOOKUP[_auth_request.level]] = _auth_request.orthanc_id
 
+				# Back-fill components of the request to ensure that the view provides the correct policies
+				_auth_request = self._auth_request_transforms(session, _auth_request)
+
 				# Add user/group ACL for requested resource
-				_rjson.update(self.resource_policy(session, _auth_request))				
+				_rjson.update(self.resource_policy(session, _auth_request))	
 
 				return self.send_response(json.dumps(_rjson, cls=SonadorJsonEncoder))
 
@@ -271,6 +276,29 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 			return self.send_response(json.dumps({
 				'error': str(err), gcapicodes.STATUS: gcapicodes.FAIL
 			}), status_code=400)
+
+	def _auth_request_transforms(self, session, auth_request):
+		'''	Parse, transform, and correct components to ensure that auth requests are processed correctly.
+
+			1.	If a DICOM UID is provided but not an Orthanc UID, back-fill the Orthanc UID so that all
+				relevant ACLs will be retrieved from the database.
+		'''
+		if getattr(auth_request, 'dicom_uid', None) and not getattr(auth_request, 'orthanc_id', None):
+			
+			# Retrieve DICOM resource model from the database and back-fill the Orthanc UID
+			di = dcmuid_fetch_dicomidentifier_model(session, auth_request.dicom_uid)
+			if di and RESOURCE_LEVEL_DB_MAPPING.get(auth_request.level) == di.resource.resourcetype:
+
+				# Initialize new auth request form components and back-filled Orthanc UID
+				auth_request = type(auth_request).clean(**{
+					**auth_request.dict(), **{ 'orthanc-id': di.resource.publicid, 'dicom-uid': auth_request.dicom_uid, }
+				})
+
+				logger.warning('Missing Orthanc UID from authorization request, back-fill value from level="%s" DICOM UID="%s" resource-uid=%s' % (
+					auth_request.level.value, auth_request.dicom_uid, auth_request.orthanc_id
+				))
+
+		return auth_request
 
 	def _merge_acl(self, policy, acl_lists, permissions):
 		'''	Merge the provided ACL lists into the policy. Iterates through the access policies and copies permissions

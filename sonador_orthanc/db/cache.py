@@ -12,9 +12,9 @@ from client.utils.object import pick
 from client.utils.decorators import classproperty
 
 from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, \
-	IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_REPORT, \
+	IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_IMAGE, IMAGING_SERVER_RESOURCE_REPORT, \
 	DicomDatetimePairKey, DicomDatetimePair
-from sonador.imaging.orthanc.base import ImagingSeries, ImagingStudy, ImagingPatient
+from sonador.imaging.orthanc.base import ImagingSeries, ImagingStudy, ImagingPatient, DcmInstance
 
 from .base import DbBase, AutoDbBase
 
@@ -67,7 +67,7 @@ class CacheResourceMixin(CacheResourceDbPropertiesMixin):
 
 			@input privatetags_resource_model: SQLAlchemy resource model used to store the
 				the private tags for the instance.
-			@input session: SQLAlchemy dataabase session
+			@input session: SQLAlchemy database session
 			@input rinstance: Sonador resource instance for which the private tags model
 				should be retrieved or initialized.
 
@@ -127,18 +127,6 @@ class CacheResourceMixin(CacheResourceDbPropertiesMixin):
 		'''	Date/time extension model associated with the resource
 		'''
 
-	@classproperty
-	@abc.abstractmethod
-	def group_acl_model(cls):
-		'''	Database model associated with group ACL policies
-		'''
-
-	@classproperty
-	@abc.abstractmethod
-	def user_acl_model(cls):
-		'''	Database model associated with user ACL policies
-		'''
-
 	@classmethod
 	@abc.abstractmethod
 	def _get_dcmtags(cls, rinstance):
@@ -149,7 +137,7 @@ class CacheResourceMixin(CacheResourceDbPropertiesMixin):
 
 	@classmethod
 	def _get_dcmdatetags(cls,
-			instance: Union[ImagingPatient, ImagingStudy, ImagingSeries],
+			instance: Union[ImagingPatient, ImagingStudy, ImagingSeries, DcmInstance],
 			dcm_datetags: Sequence[DicomDatetimePairKey], dcache=None,**kwargs):
 		''' Retrieve the provided date/time tags from the instance.
 
@@ -180,7 +168,24 @@ class CacheResourceMixin(CacheResourceDbPropertiesMixin):
 		'''
 
 
-class CachePatient(CacheResourceMixin, DbBase):
+class CacheAclResourceMixin:
+	'''	Mixin class which defines properties and methods for working with user and group 
+		access control (ACL) models.
+	'''
+	@classproperty
+	@abc.abstractmethod
+	def group_acl_model(cls):
+		'''	Database model associated with group ACL policies
+		'''
+
+	@classproperty
+	@abc.abstractmethod
+	def user_acl_model(cls):
+		'''	Database model associated with user ACL policies
+		'''
+
+
+class CachePatient(CacheAclResourceMixin, CacheResourceMixin, DbBase):
 	__tablename__ = 'sonador_cache_patient'
 
 	birth_date = Column(SqlDateTime(), nullable=True)
@@ -190,14 +195,15 @@ class CachePatient(CacheResourceMixin, DbBase):
 		'CacheStudy', back_populates='parent', overlaps='studies_collection,parent', viewonly=True)
 
 	privatetags = relationship('CachePatientPrivateTags', overlaps='patient,privatetags', back_populates='patient',
-		primaryjoin='CachePatient.uid == foreign(CachePatientPrivateTags.uid)', viewonly=True, uselist=False)
+		primaryjoin='CachePatient.uid == foreign(CachePatientPrivateTags.uid)', uselist=False,
+		cascade='all,delete-orphan')
 	timestamp_tags = relationship('CachePatientDatetime', overlaps='patient,timestamp_tags', back_populates='patient',
-		primaryjoin='CachePatient.uid == foreign(CachePatientDatetime.uid)', viewonly=True)
+		primaryjoin='CachePatient.uid == foreign(CachePatientDatetime.uid)', cascade='all,delete-orphan')
 
 	auth_user = relationship('UserPatientAuth', overlaps='patient,auth_user', back_populates='patient',
-		primaryjoin='CachePatient.uid == foreign(UserPatientAuth.resource)', viewonly=True)
+		primaryjoin='CachePatient.uid == foreign(UserPatientAuth.resource)', cascade='all,delete-orphan')
 	auth_group = relationship('GroupPatientAuth', overlaps='patient,auth_group', back_populates='patient',
-		primaryjoin='CachePatient.uid == foreign(GroupPatientAuth.resource)', viewonly=True)
+		primaryjoin='CachePatient.uid == foreign(GroupPatientAuth.resource)', cascade='all,delete-orphan')
 
 	@classproperty
 	def type(cls):
@@ -284,7 +290,7 @@ class CachePatient(CacheResourceMixin, DbBase):
 		return ci
 
 
-class CacheStudy(CacheResourceMixin, DbBase):
+class CacheStudy(CacheAclResourceMixin, CacheResourceMixin, DbBase):
 	__tablename__ = 'sonador_cache_study'
 
 	ts = Column(SqlDateTime(), nullable=True)
@@ -299,23 +305,23 @@ class CacheStudy(CacheResourceMixin, DbBase):
 		'CacheSeries', back_populates='parent', overlaps='parent,series_collection', viewonly=True)
 
 	privatetags = relationship('CacheStudyPrivateTags', overlaps='study,privatetags', back_populates='study',
-		primaryjoin='CacheStudy.uid == foreign(CacheStudyPrivateTags.uid)', viewonly=True, uselist=False)
+		primaryjoin='CacheStudy.uid == foreign(CacheStudyPrivateTags.uid)',uselist=False, cascade='all,delete-orphan')
 	timestamp_tags = relationship('CacheStudyDatetime', overlaps='study,timestamp_tags', back_populates='study',
-		primaryjoin='CacheStudy.uid == foreign(CacheStudyDatetime.uid)', viewonly=True)
+		primaryjoin='CacheStudy.uid == foreign(CacheStudyDatetime.uid)', cascade='all,delete-orphan')
 	
 	worklist_reviewer = relationship('StudyReviewerWorklistItem', overlaps='study,worklist_reviewer', back_populates='study',
-		primaryjoin='CacheStudy.uid == foreign(StudyReviewerWorklistItem.resource)', viewonly=True)
+		primaryjoin='CacheStudy.uid == foreign(StudyReviewerWorklistItem.resource)',cascade='all,delete-orphan')
 
 	comments = relationship('ImagingStudyComment', overlaps='study,comments', back_populates='study',
-		primaryjoin='CacheStudy.uid == foreign(ImagingStudyComment.study_id)', viewonly=True)
+		primaryjoin='CacheStudy.uid == foreign(ImagingStudyComment.study_id)', cascade='all,delete-orphan')
 
 	worklist_reviewer = relationship('StudyReviewerWorklistItem', overlaps='study,worklist_reviewer', back_populates='study',
-		primaryjoin='CacheStudy.uid == foreign(StudyReviewerWorklistItem.resource)', viewonly=True)
+		primaryjoin='CacheStudy.uid == foreign(StudyReviewerWorklistItem.resource)', cascade='all,delete-orphan')
 
 	auth_user = relationship('UserStudyAuth', overlaps='study,auth_user', back_populates='study',
-		primaryjoin='CacheStudy.uid == foreign(UserStudyAuth.resource)', viewonly=True)
+		primaryjoin='CacheStudy.uid == foreign(UserStudyAuth.resource)', cascade='all,delete-orphan')
 	auth_group = relationship('GroupStudyAuth', overlaps='study,auth_group', back_populates='study',
-		primaryjoin='CacheStudy.uid == foreign(GroupStudyAuth.resource)', viewonly=True)
+		primaryjoin='CacheStudy.uid == foreign(GroupStudyAuth.resource)', cascade='all,delete-orphan')
 
 	@classproperty
 	def type(cls):
@@ -352,6 +358,10 @@ class CacheStudy(CacheResourceMixin, DbBase):
 	def worklist_reviewer_model(cls):
 		from .worklist import StudyReviewerWorklistItem
 		return StudyReviewerWorklistItem
+
+	@classproperty
+	def parent_resource_model(cls):
+		return CachePatient
 
 	@classmethod
 	def _get_dcmtags(cls, instance, series_idx=0, dcm_idx=0):
@@ -406,7 +416,7 @@ class CacheStudy(CacheResourceMixin, DbBase):
 		return ci
 
 
-class CacheSeries(CacheResourceMixin, DbBase):
+class CacheSeries(CacheAclResourceMixin, CacheResourceMixin, DbBase):
 	__tablename__ = 'sonador_cache_series'
 
 	ts = Column(SqlDateTime(), nullable=True)
@@ -416,18 +426,21 @@ class CacheSeries(CacheResourceMixin, DbBase):
 		SqlString(64), ForeignKey('sonador_cache_study.uid', ondelete='CASCADE'), nullable=True)
 	parent = relationship('CacheStudy', overlaps='series_collection,parent', viewonly=True)
 
+	instances_collection = relationship(
+		'CacheInstance', back_populates='parent', overlaps='parent,instances_collection', viewonly=True)
+
 	privatetags = relationship('CacheSeriesPrivateTags', overlaps='series,privatetags', back_populates='series',
-		primaryjoin='CacheSeries.uid == foreign(CacheSeriesPrivateTags.uid)', viewonly=True, uselist=False)
+		primaryjoin='CacheSeries.uid == foreign(CacheSeriesPrivateTags.uid)', uselist=False, cascade='all,delete-orphan')
 	timestamp_tags = relationship('CacheSeriesDatetime', overlaps='series,timestamp_tags', back_populates='series',
-		primaryjoin='CacheSeries.uid == foreign(CacheSeriesDatetime.uid)', viewonly=True)
+		primaryjoin='CacheSeries.uid == foreign(CacheSeriesDatetime.uid)', cascade='all,delete-orphan')
 	
 	comments = relationship('ImagingSeriesComment', overlaps='series,comments', back_populates='series',
-		primaryjoin='CacheSeries.uid == foreign(ImagingSeriesComment.series_id)', viewonly=True)
+		primaryjoin='CacheSeries.uid == foreign(ImagingSeriesComment.series_id)', cascade='all,delete-orphan')
 	
 	auth_user = relationship('UserSeriesAuth', overlaps='series,auth_user', back_populates='series',
-		primaryjoin='CacheSeries.uid == foreign(UserSeriesAuth.resource)', viewonly=True)
+		primaryjoin='CacheSeries.uid == foreign(UserSeriesAuth.resource)', cascade='all,delete-orphan')
 	auth_group = relationship('GroupSeriesAuth', overlaps='series,auth_group', back_populates='series',
-		primaryjoin='CacheSeries.uid == foreign(GroupSeriesAuth.resource)', viewonly=True)
+		primaryjoin='CacheSeries.uid == foreign(GroupSeriesAuth.resource)', cascade='all,delete-orphan')
 
 	@classproperty
 	def type(cls):
@@ -465,6 +478,10 @@ class CacheSeries(CacheResourceMixin, DbBase):
 		from .auth import UserSeriesAuth
 		return UserSeriesAuth
 
+	@classproperty
+	def parent_resource_model(cls):
+		return CacheStudy
+
 	@classmethod
 	def _get_dcmtags(cls, instance, dcm_idx=0):
 		'''	Retrieve DICOM tags from specified instance for series
@@ -488,7 +505,18 @@ class CacheSeries(CacheResourceMixin, DbBase):
 
 		# Add database references
 		if link:
+
+			# Link to parent study
 			ci.parent_id = instance.study
+
+			# Iterate through slices/instances and link to current series as parent
+			if ci.instances:
+
+				for dcm_uid in ci.instances:
+					dcm = session.query(CacheInstance).filter_by(uid=dcm_uid).first()
+					if dcm:
+						dcm.parent_id = ci.uid
+						session.add(dcm)
 
 		# Cache private tags
 		if dcm_privatetags:
@@ -511,8 +539,92 @@ class CacheSeries(CacheResourceMixin, DbBase):
 		return ci
 
 
+class CacheInstance(CacheResourceMixin, DbBase):
+	__tablename__ = 'sonador_cache_instance'
+
+	ts = Column(SqlDateTime(), nullable=True)
+	series_idx = Column(SqlInteger)
+
+	file_uid = Column(SqlString(64))
+	file_size = Column(SqlInteger)
+
+	parent_id = Column(
+		SqlString(64), ForeignKey('sonador_cache_series.uid', ondelete='CASCADE'), nullable=True)
+	parent = relationship('CacheSeries', overlaps='instances_collection,parent', viewonly=True)
+
+	privatetags = relationship('CacheInstancePrivateTags', overlaps='instance,privatetags', back_populates='instance',
+		primaryjoin='CacheInstance.uid == foreign(CacheInstancePrivateTags.uid)', uselist=False, cascade='all,delete-orphan')
+	timestamp_tags = relationship('CacheInstanceDatetime', overlaps='instance,timestamp_tags', back_populates='instance',
+		primaryjoin='CacheInstance.uid == foreign(CacheInstanceDatetime.uid)', cascade='all,delete-orphan')
+
+	@classproperty
+	def type(cls):
+		return IMAGING_SERVER_RESOURCE_IMAGE
+
+	@classproperty
+	def code(cls):
+		from .internal import ORTHANCDB_INSTANCE_TYPE
+		return ORTHANCDB_INSTANCE_TYPE
+
+	@classproperty
+	def privatetags_resource_model(cls):
+		from .dcmext import CacheInstancePrivateTags
+		return CacheInstancePrivateTags
+
+	@classproperty
+	def datetime_resource_model(cls):
+		from .dcmext import CacheInstanceDatetime
+		return CacheInstanceDatetime
+
+	@classproperty
+	def parent_resource_model(cls):
+		return CacheSeries
+
+	@classmethod
+	def _get_dcmtags(cls, instance):
+		'''	Retrieve DICOM tags from specified instance for study
+		'''
+		return instance.tags
+
+	@classmethod
+	def index(cls, session, instance: DcmInstance,
+			link=True, commit=True, dcm_privatetags=None, dcm_datetags=None, **kwargs):
+		'''	Initialize a copy of the instance in the index
+		'''
+		ci = cls._init_cache_instance(session, instance)
+		ci.file_size = instance.file_size
+		ci.file_uid = instance.file_uid
+		ci.ts = instance.ts
+
+		# Add database references
+		if link:
+			ci.parent_id = instance.series
+
+		# Cache private tags
+		if dcm_privatetags:
+			cpi = cls._init_privatetags(
+				cls.privatetags_resource_model, session, instance, dcm_privatetags)
+			session.add(cpi)
+
+		# Created indexed copies of date/time tags
+		if dcm_datetags:
+			for dcm_datetag_val in cls._get_dcmdatetags(instance, dcm_datetags=dcm_datetags).values():
+				dci = cls._init_dcmdatetag(
+					cls.datetime_resource_model, session, instance, dcm_datetag_val)
+				session.add(dci)
+
+		# Add cached instance to session and (if indicated) commit
+		session.add(ci)
+		if commit:
+			session.commit()
+
+		return ci
+
+
+
 SONADOR_CACHE_MODELS = {
 	IMAGING_SERVER_RESOURCE_PATIENT: CachePatient,
 	IMAGING_SERVER_RESOURCE_STUDY: CacheStudy,
 	IMAGING_SERVER_RESOURCE_SERIES: CacheSeries,
+	IMAGING_SERVER_RESOURCE_IMAGE: CacheInstance,
 }

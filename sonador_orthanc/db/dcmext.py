@@ -18,6 +18,7 @@ class CacheExtendedDcmBase(CacheResourceDbPropertiesMixin):
 	__table_args__ = { 'extend_existing': True }
 
 
+
 class CachePatientPrivateTags(CacheExtendedDcmBase, DbBase):
 	''' Patient cache model that can be used to store patient private tags.
 	'''
@@ -48,6 +49,17 @@ class CacheSeriesPrivateTags(CacheExtendedDcmBase, DbBase):
 		viewonly=True, uselist=False)
 
 
+class CacheInstancePrivateTags(CacheExtendedDcmBase, DbBase):
+	'''	Instance cache model that can be used to store instance private tags
+	'''
+	__tablename__ = 'sonador_cache_instance_private'
+
+	instance = relationship('CacheInstance',
+		back_populates='privatetags', primaryjoin='foreign(CacheInstancePrivateTags.uid) == CacheInstance.uid',
+		viewonly=True, uselist=False)
+
+
+
 class CacheDatetimePropertiesMixin:
 	'''	Mixin class providing timestamp fields for cache date/time tables
 	'''
@@ -58,6 +70,7 @@ class CacheDatetimePropertiesMixin:
 	time_tag = Column(SqlString(64), primary_key=True)
 
 	ts = Column(SqlDateTime())
+
 
 
 class CachePatientDatetime(CacheDatetimePropertiesMixin, DbBase):
@@ -85,3 +98,12 @@ class CacheSeriesDatetime(CacheDatetimePropertiesMixin, DbBase):
 
 	series = relationship('CacheSeries', back_populates='timestamp_tags',
 		primaryjoin='foreign(CacheSeriesDatetime.uid) == CacheSeries.uid', viewonly=True)
+
+
+class CacheInstanceDatetime(CacheDatetimePropertiesMixin, DbBase):
+	'''	Instance cache model that can be used to store and query DICOM timestamps
+	'''
+	__tablename__ = 'sonador_cache_instance_datetime'
+
+	instance = relationship('CacheInstance', back_populates='timestamp_tags',
+		primaryjoin='foreign(CacheInstanceDatetime.uid) == CacheInstance.uid', viewonly=True)

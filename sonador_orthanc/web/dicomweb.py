@@ -22,18 +22,15 @@ from ..apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, ORTHANC_CONFIG_SECTIO
 from ..helpers import orthanc_maindicom_tags
 from ..db.internal import Resource, DicomIdentifiers
 from ..db.cache import CachePatient, CacheStudy, CacheSeries
-from ..db.helpers import dcmquery2psqlregex
+from ..db.helpers import dcmquery2psqlregex, dcmuid_fetch_dicomidentifier_model
 from ..dcmquery.auth import StudyResourceAclMixin
+
+from ..cache.web import ResourceBaseMixin
+from ..cache.web.study import CacheStudyListBaseView
+from ..cache.web.secure_search import SecureResourceQueryViewMixin
 
 from .base import OrthancBaseView
-from .study import CacheStudyListBaseView
-from .cache import ResourceBaseMixin
 from .secure_user import UserContextMixin
-from .secure_search import SecureResourceQueryViewMixin
-
-from ..dcmquery.auth import StudyResourceAclMixin
-
-from ..dcmquery.auth import StudyResourceAclMixin
 
 logger = logging.getLogger(__name__)
 
@@ -123,9 +120,8 @@ class DicomResourceMixin(ResourceBaseMixin):
 		ruid = ruid or self.get_resource_uid(*args, **kwargs)
 
 		# Retrieve DICOM identifier instance to map to resource
-		di = session.query(self.dicom_identifiers_model) \
-			.options(joinedload(self.dicom_identifiers_model.resource)) \
-			.filter_by(value=ruid).first()
+		di = dcmuid_fetch_dicomidentifier_model(
+			session, ruid, dicom_identifiers_model=self.dicom_identifiers_model)
 		if not di:
 			raise ResourceDoesNotExist(
 				'Unable to retrieve resource model instance, uid=%s does not exist' % ruid,
@@ -173,6 +169,24 @@ def init_cached_endpoints(orthanc_conf, sonador_manager, OrthancSession):
 		posixpath.join(dicomweb_root, 'studies'),
 		CacheStudyDicomWebListView.as_view(sonador_manager=sonador_manager,
 			sessionmaker=OrthancSession, cache_dicomtags=orthanc_maindicom_tags(orthanc_conf), dcm_privatetags=dcm_privatetags))
+	
+
+def init_download_endpoints(orthanc_conf, sonador_manager, OrthancSession):
+	'''	Initialize DICOMweb endpoints for zip archive download
+	'''
+	from .download import StudyDICOMDownloadView, SeriesDICOMDownloadView
+
+	dicomweb_conf = orthanc_conf.get(ORTHANC_CONFIG_SECTION_DICOMWEB, {})
+	dicomweb_root = dicomweb_conf.get('Root')
+	if not dicomweb_root:
+		raise ConfigurationError('Unable to initialize DICOmweb download endpoints, invalid DICOMweb configuration. '
+			+ 'No DICOMweb root defined in configuration.')
+
+	# Initialize DICOMweb download endpoitns
+	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'studies/(\d+(\.\d+)+)/archive'),
+		StudyDICOMDownloadView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
+	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'series/(\d+(\.\d+)+)/archive'),
+		SeriesDICOMDownloadView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
 
 
 def init_ext_endpoints(orthanc_conf, sonador_manager, OrthancSession):
@@ -181,8 +195,13 @@ def init_ext_endpoints(orthanc_conf, sonador_manager, OrthancSession):
 	dicomweb_conf = orthanc_conf.get(ORTHANC_CONFIG_SECTION_DICOMWEB, {})
 	dicomweb_root = dicomweb_conf.get('Root')
 	if not dicomweb_root:
-		raise ConfigurationError('Unable to initialize DICOmweb extension endpoints, invalid DICOmweb configuration. '
+		raise ConfigurationError('Unable to initialize DICOmweb extension endpoints, invalid DICOMweb configuration. '
 			+ 'No DICOMweb root defined in configuration.')
+	
+	if getattr(sonador_manager, "kafka_producer", None) and getattr(sonador_manager.kafka_producer, "topic", None):
+		kafka_topic = sonador_manager.kafka_producer.topic
+	else:
+		kafka_topic = None
 
 	from .comments import CommentSeriesDICOMManagementView, CommentSeriesDICOMRestView, CommentStudyDICOMManagementView, CommentStudyDICOMRestView
 
@@ -191,22 +210,22 @@ def init_ext_endpoints(orthanc_conf, sonador_manager, OrthancSession):
 	orthanc.LogWarning('Enabling DICOMweb extension: series comments %s' % comments_series_dicomweb_url)
 
 	orthanc.RegisterRestCallback(comments_series_dicomweb_url, CommentSeriesDICOMManagementView.as_view(
-		sonador_manager=sonador_manager, sessionmaker=OrthancSession))
+		sonador_manager=sonador_manager, sessionmaker=OrthancSession, kafka_topic=kafka_topic))
 	orthanc.RegisterRestCallback(
 		posixpath.join(dicomweb_root,
 			r'series/(\d+(\.\d+)+)/comments/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'),
-		CommentSeriesDICOMRestView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
+		CommentSeriesDICOMRestView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession, kafka_topic=kafka_topic))
 
 	# Study DICOMweb comment endpoints
 	comments_study_dicomweb_url = posixpath.join(dicomweb_root, r'studies/(\d+(\.\d+)+)/comments')
 	orthanc.LogWarning('Enabling DICOMweb extension: study comments %s' % comments_study_dicomweb_url)
 
 	orthanc.RegisterRestCallback(comments_study_dicomweb_url, CommentStudyDICOMManagementView.as_view(
-		sonador_manager=sonador_manager, sessionmaker=OrthancSession))
+		sonador_manager=sonador_manager, sessionmaker=OrthancSession, kafka_topic=kafka_topic))
 	orthanc.RegisterRestCallback(
 		posixpath.join(dicomweb_root,
 			r'studies/(\d+(\.\d+)+)/comments/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'),
-		CommentStudyDICOMRestView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
+		CommentStudyDICOMRestView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession, kafka_topic=kafka_topic))
 
 
 def init_distortionfilter_endpoints(orthanc_conf, sonador_manager, OrthancSession):
@@ -248,15 +267,20 @@ def init_worklist_endpints(orthanc_conf, sonador_manager, OrthancSession):
 	if not dicomweb_root:
 		raise ConfigurationError('Unable to initialize Study list endpoint, invalid DICOMweb configuration. '
 			+ 'No DICOMweb root defined in configuration.')
+	
+	if getattr(sonador_manager, "kafka_producer", None) and getattr(sonador_manager.kafka_producer, "topic", None):
+		kafka_topic = sonador_manager.kafka_producer.topic
+	else:
+		kafka_topic = None
 
 	dicomweb_worklist_study_management_url = posixpath.join(dicomweb_root, r'studies/(\d+(\.\d+)+)/worklists')
 	orthanc.LogWarning('Enabling DICOMweb worklist management endpoints: %s' % dicomweb_worklist_study_management_url)
 	
 	# Reviewer Worklist Item Management and REST Views
 	orthanc.RegisterRestCallback(dicomweb_worklist_study_management_url,
-		StudyReviewerWorklistItemDICOMManagementView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
+		StudyReviewerWorklistItemDICOMManagementView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession, kafka_topic=kafka_topic))
 	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'studies/(\d+(\.\d+)+)/worklists/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'),
-		StudyReviewerWorklistItemDICOMRestView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
+		StudyReviewerWorklistItemDICOMRestView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession, kafka_topic=kafka_topic))
 
 	dicomweb_worklist_study_url = posixpath.join(dicomweb_root, 'worklist/studies')
 	orthanc.LogWarning('Enable DICOMweb study review worklist endpoint: %s' % dicomweb_worklist_study_url)

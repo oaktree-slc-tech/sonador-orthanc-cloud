@@ -1,4 +1,4 @@
-import json, logging
+import json, logging, copy
 import orthanc
 
 from sonador.apisettings import DicomDatetimePairKey, \
@@ -14,6 +14,47 @@ from ..apisettings import KAFKA_TIMEOUT_DEFAULT, ORTHANC_CONFIG_SECTION_SONADOR,
 	ORTHANC_SERVER_DICOM as KTAG_ORTHANC_SERVER_DICOM
 
 logger = logging.getLogger(__name__)
+
+def get_study_comment_kafka_data(sonador_manager, sid, cid):
+	''' Retrieve Kafka formatted data for study comment
+	'''
+	_iserver = sonador_manager.get_internal_imageserver()
+	study = _iserver.get_study(sid)
+	comment = study.get_comment(cid)
+		
+	cdata = comment.json
+	cdata['Resource'] = 'Comment'
+	
+	return cdata
+
+
+def get_series_comment_kafka_data(sonador_manager, sxid, cid):
+	''' Retrieve Kafka formatted data for study comment
+	'''
+	_iserver = sonador_manager.get_internal_imageserver()
+	study = _iserver.get_series(sxid)
+	comment = study.get_comment(cid)
+		
+	cdata = comment.json
+	cdata['Resource'] = 'Comment'
+	
+	return cdata
+
+
+def get_study_worklist_kafka_data(sonador_manager, sid, wid):
+	
+	_iserver = sonador_manager.get_internal_imageserver()
+	study = _iserver.get_study(sid)
+	worklist_item = study.get_reviewer_worklist_item(wid)
+
+	# Retrieve Kafka data for study
+	sdata = fetch_kafka_resource_data(sonador_manager, IMAGING_SERVER_RESOURCE_STUDY, sid)
+	
+	wdata = worklist_item.json
+	wdata['Study'] = sdata
+	wdata['Resource'] = 'Worklist'
+	
+	return wdata
 
 
 def fetch_kafka_resource_data(sonador_manager, resource_type, resource):

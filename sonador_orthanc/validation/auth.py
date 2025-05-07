@@ -13,6 +13,8 @@ from client.errors import ConfigurationError
 
 from sonador.apisettings import IMAGING_SERVER_RESOURCE_IMAGE
 from .. import apisettings as sonador_api
+from ..db.internal import ORTHANCDB_PATIENT_TYPE, ORTHANCDB_STUDY_TYPE, \
+	ORTHANCDB_SERIES_TYPE, ORTHANCDB_INSTANCE_TYPE
 
 from .base import OrthancBaseForm, OrthancBaseModelform, \
 	SonadorUserValidationMixin, SonadorGroupValidationMixin
@@ -243,6 +245,14 @@ class ResourceLevels(str, Enum):
 	SERIES = sonador_api.IMAGING_SERVER_RESOURCE_SERIES.lower()
 	INSTANCE = IMAGING_SERVER_RESOURCE_IMAGE.lower()
 	SYSTEM = 'system'
+
+
+RESOURCE_LEVEL_DB_MAPPING = {
+	sonador_api.IMAGING_SERVER_RESOURCE_PATIENT.lower(): ORTHANCDB_PATIENT_TYPE,
+	sonador_api.IMAGING_SERVER_RESOURCE_STUDY.lower(): ORTHANCDB_STUDY_TYPE,
+	sonador_api.IMAGING_SERVER_RESOURCE_SERIES.lower(): ORTHANCDB_SERIES_TYPE,
+	IMAGING_SERVER_RESOURCE_IMAGE.lower(): ORTHANCDB_INSTANCE_TYPE,
+}
 
 
 class ResourceRequestMethods(str, Enum):

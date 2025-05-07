@@ -31,16 +31,24 @@ SONADOR_CACHE_OPCODE_INDEX_STUDY = 'index-study'
 SONADOR_CACHE_OPCODE_INDEX_DELETE_STUDY = 'index-delete-study'
 SONADOR_CACHE_OPCODE_INDEX_SERIES = 'index-series'
 SONADOR_CACHE_OPCODE_INDEX_DELETE_SERIES = 'index-delete-series'
+SONADOR_CACHE_OPCODE_INDEX_IMAGE = 'index-instance'
+SONADOR_CACHE_OPCODE_INDEX_DELETE_IMAGE = 'index-delete-instance'
 
 # Sonador Cache Response Codes
 SONADOR_CACHE_COUNT_PATIENT = 'patient-count'
 SONADOR_CACHE_COUNT_STUDY = 'study-count'
 SONADOR_CACHE_COUNT_SERIES = 'series-count'
+SONADOR_CACHE_COUNT_INSTANCES = 'instances-count'
 
 
 # Private DICOM Tags
 SONADOR_CONF_PRIVATE_TAGS = 'PrivateMainDicomTags'
 SONADOR_CONF_DATETIME_TAGS = 'DicomExtDatetime'
+
+
+# Cache Settings
+SONADOR_CONF_CACHE = 'Cache'
+SONADOR_CONF_CACHE_THREADS_COUNT = 'CacheThreadsCount'
 
 
 # Query Request Components
@@ -84,3 +92,6 @@ SONADOR_KAFKA_OPCODE_PUSH_PATIENT = 'kafka-export.patient'
 SONADOR_KAFKA_OPCODE_PUSH_STUDY = 'kafka-export.study'
 SONADOR_KAFKA_OPCODE_PUSH_SERIES = 'kafka-export.series'
 SONADOR_KAFKA_OPCODE_PUSH_IMAGE = 'kafka-export.instance'
+SONADOR_KAFKA_OPCODE_PUSH_WORKLIST = 'kafka-export.study-worklist'
+SONADOR_KAFKA_OPCODE_PUSH_STUDY_COMMENT = 'kafka-export.study-comment'
+SONADOR_KAFKA_OPCODE_PUSH_SERIES_COMMENT = 'kafka-export.series-comment'
