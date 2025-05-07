@@ -60,9 +60,9 @@ class UserPreferencesRestView(ObjectRestView):
 		'''
         
 		# Retrieve user preferences UID
-		uid = uid or self.get_object_uid(*args, **kwargs)
+		user = uid or self.get_object_uid(*args, **kwargs)
 
-		pref = session.query(self.model).filter_by(uid=uid).first()
+		pref = session.query(self.model).filter_by(user=user).first()
   
 		if not pref:
 			raise ResourceDoesNotExist('Unable to retrieve user preferences ID=%s' % uid)

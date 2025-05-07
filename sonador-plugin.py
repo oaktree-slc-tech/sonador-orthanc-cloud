@@ -219,7 +219,7 @@ def orthanc_cache_onstart(changeType, level, resource):
 	
 	orthanc.RegisterRestCallback(r'/user-preferences/create',
 		UserPreferencesManagementView.as_view(sessionmaker=OrthancSession))
-	orthanc.RegisterRestCallback(r'/user-preferences',
+	orthanc.RegisterRestCallback(r'/user-preferences/\d+',
 		UserPreferencesRestView.as_view(sessionmaker=OrthancSession))
 
 	# Tags
