@@ -169,6 +169,24 @@ def init_cached_endpoints(orthanc_conf, sonador_manager, OrthancSession):
 		posixpath.join(dicomweb_root, 'studies'),
 		CacheStudyDicomWebListView.as_view(sonador_manager=sonador_manager,
 			sessionmaker=OrthancSession, cache_dicomtags=orthanc_maindicom_tags(orthanc_conf), dcm_privatetags=dcm_privatetags))
+	
+
+def init_download_endpoints(orthanc_conf, sonador_manager, OrthancSession):
+	'''	Initialize DICOMweb endpoints for zip archive download
+	'''
+	from .download import StudyDICOMDownloadView, SeriesDICOMDownloadView
+
+	dicomweb_conf = orthanc_conf.get(ORTHANC_CONFIG_SECTION_DICOMWEB, {})
+	dicomweb_root = dicomweb_conf.get('Root')
+	if not dicomweb_root:
+		raise ConfigurationError('Unable to initialize DICOmweb download endpoints, invalid DICOMweb configuration. '
+			+ 'No DICOMweb root defined in configuration.')
+
+	# Initialize DICOMweb download endpoitns
+	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'studies/(\d+(\.\d+)+)/archive'),
+		StudyDICOMDownloadView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
+	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'series/(\d+(\.\d+)+)/archive'),
+		SeriesDICOMDownloadView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
 
 
 def init_ext_endpoints(orthanc_conf, sonador_manager, OrthancSession):
@@ -177,7 +195,7 @@ def init_ext_endpoints(orthanc_conf, sonador_manager, OrthancSession):
 	dicomweb_conf = orthanc_conf.get(ORTHANC_CONFIG_SECTION_DICOMWEB, {})
 	dicomweb_root = dicomweb_conf.get('Root')
 	if not dicomweb_root:
-		raise ConfigurationError('Unable to initialize DICOmweb extension endpoints, invalid DICOmweb configuration. '
+		raise ConfigurationError('Unable to initialize DICOmweb extension endpoints, invalid DICOMweb configuration. '
 			+ 'No DICOMweb root defined in configuration.')
 	
 	if getattr(sonador_manager, "kafka_producer", None) and getattr(sonador_manager.kafka_producer, "topic", None):

@@ -65,6 +65,10 @@ IMAGING_CACHE_RESOURCES = {
 
 class CacheBaseView(OrthancBaseView):
 	'''	Base class for cache based views
+
+		@attr sonador_manager (Sonador Manager instance): Orthanc Sonador mangaer instance
+        @attr sessionmaker (SQLAlchemy sessionmaker class): session maker instance to be
+            used for creating database connections/sessions.
 	'''
 	sonador_manager = None
 	sessionmaker = None
@@ -87,9 +91,16 @@ class CacheBaseView(OrthancBaseView):
 
 class ResourceBaseMixin(object):
 	''' Mixin which provids methods to parse URLs and retrieve resources from the Orthanc database.
+
+		@attr resource_type (str): resource type provided by the mixin
+		@attr resource_code (int): numeric code used by the resource within the database
 	'''
 	resource_uid_regex = IMAGING_SERVER_UID_REGEX
 	resource_model = Resource
+
+	# Resource identifiers: string (API) and numeric (database) identifiers
+	resource_type = None
+	resource_code = None
 
 	def init_resource_mixin(self, *args, **kwargs):
 		'''	Verify that mixin properties, database models, and other attributes have been provided.
@@ -98,8 +109,8 @@ class ResourceBaseMixin(object):
 			raise ConfigurationError(
 				'Unable to initialize %s view instance: invalid resource model' % type(self).__name__)
 		
-		self.resource_type = kwargs.get('resource_type')
-		self.resource_code = kwargs.get('resource_code')
+		self.resource_type = kwargs.get('resource_type', self.resource_type)
+		self.resource_code = kwargs.get('resource_code', self.resource_code)
 
 		if not self.resource_type:
 			raise ConfigurationError(
