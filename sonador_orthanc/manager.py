@@ -65,6 +65,11 @@ class OrthancCloudInternalImagingServer(OrthancInternalImagingServer):
 		'''
 		return SonadorImagingServer.fetch_acl(self, **kwargs)
 
+	def orthanc_apiurl_fqdn(self, *args, **kwargs):
+		'''	Create an API URL with the fully qualified domain of the imaging server
+		'''
+		return self.server.get_imageserver(self.pk).orthanc_apiurl(*args, **kwargs)
+
 
 class SonadorServerManager(BaseServerManager):
 	'''	Manages the integration between Sonador and Orthanc and provides methods for

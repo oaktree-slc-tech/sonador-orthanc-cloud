@@ -41,18 +41,18 @@ class DownloadBaseView(DicomResourceMixin, CacheBaseView):
         '''
 
     def get(self, output, uri, request, *args, **kwargs):
-
+        ''' Verify that the object exists and then redirect user to primary Orthanc download endpoint
+        '''
         try:
             with self.sessionmaker() as session:
 
                 # Retrieve object instance
                 obj = self.get_object(session, *args, **kwargs)
                 
-            # Send the response
-            return self.send_response(obj.filearchive().raw.getvalue(),
-                status_code=200, headers={
-                    'Content-Disposition': f'attachment; filename="{obj.pk}.zip"',
-                }, mtype='application/zip')
+            # Redirect to study download endpoint
+            return self.send_response('', status_code=302, headers={
+                'Location': obj.pacs.orthanc_apiurl_fqdn(obj.filearchive_url, internal_dns=False)
+            })
 
         except ResourceDoesNotExist as e:
 
