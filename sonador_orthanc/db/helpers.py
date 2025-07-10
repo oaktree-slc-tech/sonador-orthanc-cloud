@@ -238,6 +238,15 @@ def orthanc_devicejson(device):
 		IMAGING_SERVER_DCM_TAG: device.dcm_tag_name,
 		IMAGING_SERVER_DCM_TAG_VALUE: device.dcm_tag_value,
 	}
+ 
+def orthanc_user_preferences(pref):
+	'''	Create Orthanc JSON structure for the user preferneces.
+	'''
+	return {
+		'ID': pref.uid,
+		'Data': pref.data,
+		'User': pref.user,
+	}
 
 def orthanc_tagjson(tag, group=None, group_attrs=sonador_api.SONADOR_GROUP_ATTRS_DEFAULT):
 	'''	Create Orthanc JSON structure for tags.
