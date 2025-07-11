@@ -243,9 +243,9 @@ def init_distortionfilter_endpoints(orthanc_conf, sonador_manager, OrthancSessio
 
 	# Distortion Filter: Device Management API
 	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'distortion-filter/devices'),
-		DistortionFilterDeviceManagementView.as_view(sessionmaker=OrthancSession))
+		DistortionFilterDeviceManagementView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
 	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'distortion-filter/devices/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'),
-		DistortionFilterDeviceRestView.as_view(sessionmaker=OrthancSession))
+		DistortionFilterDeviceRestView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
 
 	# Distortion Filter: Apply Filter
 	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'distortion-filter/(\d+(\.\d+)+)'),

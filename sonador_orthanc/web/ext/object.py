@@ -46,6 +46,11 @@ class ObjectManagementView(ObjectManagementBaseView):
 class ObjectRestView(ObjectBaseRestView):
 	'''	Orthanc view instance which can be used to manage existing instances of an object.
 	'''
+	def err_404(self, *args, **kwargs):
+		'''	Create 404 error message for the view instance
+		'''
+		return 'Resource="%s" does not exist' % self.uri
+ 
 	def get_object_kwargs(self, *args, **kwargs):
 		'''	Add keyword arguments to the get_object method of the view
 		'''

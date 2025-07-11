@@ -43,9 +43,9 @@ def check_dicom_compatibility(devices, filter_dicom_tags):
 	'''
 	results = []
 
-	for device in devices:
+	for index, device in enumerate(devices):
         # Normalize DICOM Tag Name format for comparison
-		dicom_tag = device['DcmTag'].replace('(', '').replace(')', '')
+		dicom_tag = device['DcmTag'].replace('(', '').replace(')', '').replace(' ', '').lower()
 		# Condition 1: Check if device information matches
 		if (filter_dicom_tags.get('0008,0070', {}) and \
             filter_dicom_tags.get('0008,1090', {}) and \
@@ -56,20 +56,21 @@ def check_dicom_compatibility(devices, filter_dicom_tags):
 				device['SoftwareVersions'] == filter_dicom_tags['0018,1020']['Value']
 			):
 				# Condition 2: Check if DICOM Tag Name and DICOM Tag Value match
-				if dicom_tag in filter_dicom_tags and filter_dicom_tags[dicom_tag]['Value'] == device['DICOMTagValue']:
-					results.append({'device_id': device['ID'], 'Device Model': device['ManufacturerModelName'], 
-					 'result': 'Filter Applied', 'error': ''})
+				if dicom_tag in filter_dicom_tags and filter_dicom_tags[dicom_tag]['Value'] == device['DcmTagValue']:
+					results.append({'device_id': index, 'orthanc_device_id': device['ID'], 'Device Model': device['ManufacturerModelName'], 
+					 'result': 'Filter Applied', 'error': '', 'message': 'Filter Applied for Series number %s on Device: %s Name: %s Version %s' % (filter_dicom_tags['0020,0011']['Value'], index, device['ManufacturerModelName'], device['SoftwareVersions'])})
 				else:
-					results.append({'device_id': device['ID'], 'Device Model': device['ManufacturerModelName'],
+					results.append({'device_id': index, 'orthanc_device_id': device['ID'], 'Device Model': device['ManufacturerModelName'],
 					 'result': 'Filter Not Applied', 
-					 'error': 'Series Number %s geometry distortion filter was not applied.' % filter_dicom_tags['0020,0011']['Value']})
+					#  'log': 'Device Tag: %s, Device Tag Value: %s, Series Tag: %s, Seires Dicom Tags: %s' % (dicom_tag, device['DcmTagValue'], dicom_tag, filter_dicom_tags),
+					 'error': 'Series number %s geometry distortion filter was not applied for Device: %s Name: %s Version %s' % (filter_dicom_tags['0020,0011']['Value'], index, device['ManufacturerModelName'], device['SoftwareVersions'])})
 			else:
 				# Condition 3: Device information does not match
-				results.append({'device_id': device['ID'], 'Device Model': device['ManufacturerModelName'],
+				results.append({'device_id': index, 'orthanc_device_id': device['ID'], 'Device Model': device['ManufacturerModelName'],
 					'result': 'Ignore', 'error': ''})
 		else:
 				# Condition 3: Device information does not match
-				results.append({'device_id': device['ID'], 'Device Model': device['ManufacturerModelName'],
+				results.append({'device_id': index, 'orthanc_device_id': device['ID'], 'Device Model': device['ManufacturerModelName'],
 					'result': 'Ignore', 'error': ''})
     
 	return results
@@ -86,6 +87,15 @@ class DistortionFilterDeviceManagementView(ObjectManagementView):
 	
 	def setup(self, output, uri, request, *args, **kwargs):
 		super().setup(output, uri, request)
+  
+	def get_objects(self, session, *args, **kwargs):
+		''' Retrieve objects from the database using the provided session. '''
+		return session.query(self.model).all()
+
+	def init_object_model(self, *args, **kwargs):
+		''' Initialize a new instance of the model. '''
+		return self.model(uid=str(uuid.uuid4()))
+
 
 class DistortionFilterDeviceRestView(ObjectRestView):
 	'''	REST endpoint which can be used to get, put, and delete a specified device from Orthanc
