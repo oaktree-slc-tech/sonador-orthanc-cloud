@@ -5,7 +5,7 @@ pydantic
 
 # Client Dependencies and Secure API
 numpy>=1.22.3
-sonador>=0.4-beta14
+sonador>=0.4.0b14
 sonador-orthanc-common>=0.2.7
 
 # Data Streaming
