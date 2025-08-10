@@ -1,0 +1,3 @@
+[submodule "orthanc-sonador-common"]
+	path = orthanc-sonador-common
+	url = git@code.oak-tree.tech:oak-tree/medical-imaging/orthanc-sonador-common.git
