@@ -10,7 +10,12 @@ from client.errors import ConfigurationError, ResourceDoesNotExist
 from client.utils.object import pick, omit
 
 from sonador.apisettings import DCMHEADER_STUDY_INSTANCE_UID, DCMHEADER_SERIES_INSTANCE_UID, IMAGING_SERVER_RESOURCE_STUDY, DICOM_UID_REGEX
+from sonador.apisettings.worklists import SONADOR_WORKLIST_STATUS_SCHEDULED, SONADOR_WORKLIST_STATUS_INPROGRESS, \
+	SONADOR_WORKLIST_STATUS_COMPLETED, SONADOR_WORKLIST_STATUS_CANCELLED
 from sonador.serialization import SonadorJsonEncoder
+
+from ..apisettings import SONADOR_WORKLIST_VIRTUAL_STATUS_OPEN, SONADOR_WORKLIST_VIRTUAL_STATUS_ALL, \
+	SONADOR_WORKLIST_STATUS_SUPPORTED, SONADOR_WORKLIST_STATUS_SUPPORTED_LOWERCASE
 
 from ..kafka.resource import get_study_worklist_kafka_data, get_study_comment_kafka_data
 from ..kafka.base import KafkaMixin
@@ -106,6 +111,9 @@ class StudyReviewerWorklistItemManagementView(StudyReviewerWorklistJsonMixin, Ka
 		'''
 		super().setup(output, uri, request, *args, **kwargs)
 
+		# Filter by State/Status
+		self.state_query = self.GET.get('State')
+
 		# Initialize Kafka message push
 		self._init_kafka(*args, **kwargs)
 
@@ -114,6 +122,23 @@ class StudyReviewerWorklistItemManagementView(StudyReviewerWorklistJsonMixin, Ka
 		'''
 		ruid = ruid or self.get_resource_uid(*args, **kwargs)
 		_workitems = session.query(self.model).filter_by(resource=ruid)
+		
+		# Apply state/status filter
+		if self.state_query:
+
+			# Retrieve "all" items
+			if self.state_query.lower() == SONADOR_WORKLIST_VIRTUAL_STATUS_ALL:
+				pass
+
+			# Retrieve "open" items
+			elif self.state_query.lower() == SONADOR_WORKLIST_VIRTUAL_STATUS_OPEN:
+				_workitems = _workitems.filter(
+					self.model.state.in_((SONADOR_WORKLIST_STATUS_SCHEDULED, SONADOR_WORKLIST_STATUS_INPROGRESS)))
+
+			# Database state codes
+			elif self.state_query.lower() in SONADOR_WORKLIST_STATUS_SUPPORTED_LOWERCASE.keys():
+				_workitems = _workitems.filter(
+					self.model.state == SONADOR_WORKLIST_STATUS_SUPPORTED_LOWERCASE.get(self.state_query.lower()))
 
 		# Retrieve user data
 		_user_uids = set([w.user for w in _workitems])
@@ -316,7 +341,8 @@ class StudyReviewerWorklistItemDICOMListView(AdminUserLookupMixin, AdminGroupLoo
 
 		# URL query parameters to filter by user and group
 		self.user_query = self.GET.get('User')
-		self.group_query = self.GET.get('Group')		
+		self.group_query = self.GET.get('Group')
+		self.state_query = self.GET.get('State', SONADOR_WORKLIST_VIRTUAL_STATUS_OPEN)
 
 	def apply_worklist_queryfilter(self, dcm_resources):
 		'''	Filter the provided DICOM resources to only those with worklist items that include groups 
@@ -351,6 +377,21 @@ class StudyReviewerWorklistItemDICOMListView(AdminUserLookupMixin, AdminGroupLoo
 		# Apply additional group filter (provided via request query parameters)
 		if self.group_query is not None:
 			dcm_resources = dcm_resources.filter(w.group == int(self.group_query))
+
+		# Apply state query filter
+		if self.state_query:
+
+			# Filter by database state codes
+			if self.state_query.lower() in SONADOR_WORKLIST_STATUS_SUPPORTED_LOWERCASE.keys():
+				dcm_resources = dcm_resources.filter(w.state == SONADOR_WORKLIST_STATUS_SUPPORTED_LOWERCASE.get(self.state_query.lower()))
+
+			# Retrieve "all" items
+			elif self.state_query.lower() == SONADOR_WORKLIST_VIRTUAL_STATUS_ALL.lower():
+				pass
+
+			# Retrieve "open" items (by default)
+			else:
+				dcm_resources = dcm_resources.filter(w.state.in_((SONADOR_WORKLIST_STATUS_SCHEDULED, SONADOR_WORKLIST_STATUS_INPROGRESS)))
 
 		return dcm_resources
 

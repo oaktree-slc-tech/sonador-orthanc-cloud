@@ -2,6 +2,7 @@
 '''
 import logging, traceback, abc
 
+from client import apisettings as capi
 from client.errors import ConfigurationError, ResourceDoesNotExist, ClientOperationError
 
 from sonador.apisettings.base import IMAGING_SESRVER_GROUP_UID_REGEX
@@ -19,6 +20,39 @@ class UserContextMixin:
 			from Sonador by identifying the authorization credential.
 		@property groups (SonadorGroupCollection): groups to which the user belongs.
 	'''
+	def get_user_creds(self, request, *args, **kwargs):
+		'''	Retrieve user credential from authorization header: should have two components.
+			* Example 1: 'api-token <token-value>'
+			* Example 2: 'Bearer <token-value>'
+		'''
+		# Parse credentials from request headers
+		if request.get('headers', {}).get('authorization', ''):
+			creds = request.get('headers', {}).get('authorization', '').split(' ')
+		
+		# Parse credential from query string or as a token in the headers
+		elif request.get('get', {}).get('token') \
+			or request.get('headers', {}).get('token'):
+
+			# Retrieve token from the URL first and then from an embedded header
+			_get = request.get('get', {}) or request.get('headers', {})
+			_token = _get.get('token')
+
+			# Determine type of token
+			if _token.startswith('h:'):
+				_type = capi.AUTH_TOKEN_BEARER
+			else:
+				_type = capi.AUTH_API_ACCESS_TOKEN
+			
+			creds = (_type, _get.get('token'))
+
+		else:
+			raise ConfigurationError('Unable to retrive credentials from request')
+		
+		if len(creds) != 2:
+			raise ValueError('Unable to retrieve user context, invalid credentials "%s"' % creds)
+
+		return creds
+
 	def init_user_context(self, request, *args, **kwargs):
 		'''	Retrieve the user context for the view instance
 		'''
@@ -31,20 +65,12 @@ class UserContextMixin:
 		# Retrieve user context from Sonador to scope request
 		self.user = kwargs.get('user') or request.get('user')
 		if self.user is None:
-
-			# Retrieve user credential from authorization header: should have two components.
-			# * Example 1: "api-token <token-value>"
-			# * Example 2: "Bearer <token-value>"
-			creds = request.get('headers', {}).get('authorization', '').split(' ')
-			if len(creds) != 2:
-				raise ValueError('Unable to retrieve user context, invalid credentials "%s"' % creds)
-
+			creds = self.get_user_creds(request, *args, **kwargs)
 			_context = _iserver.admin_verify_user_credentials(creds[0], creds[1])
 			self.user = SonadorUser(_iserver, _context.get('user', {}))
 		
 		# Retrieve user groups
 		self.groups = SonadorGroupCollection(_iserver, self.user._objectdata.get('groups', []))
-
 
 
 class UserLookupBaseMixin(abc.ABC):

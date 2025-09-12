@@ -108,11 +108,48 @@ class WorklistItemValidationForm(SonadorGroupValidationMixin, SonadorUserValidat
 					msg=emsg)
 			])
 
+		# If an item has a complete timestamp, prevent modification.
+		if _update and obj.complete:
+			emsg = 'Worklist item marked as complete. Worklist items cannot be modified once they are set as complete.'
+			err = PydanticValidationError.from_exception_data(emsg, line_errors=[
+				InitErrorDetails(
+					type=PydanticCustomError(sonador_api.SONAODR_OBJECT_INVALID_ERROR, emsg),
+					loc=('Complete',), msg=emsg),
+			])
+			raise err
+
 		# Set the complete field to current datetime if 'Complete' key is present. If complete is not
 		# present or a negative value
-		if kwargs.get('Complete') or str2bool(kwargs.get('Complete')):
+		if str2bool(kwargs.get('Complete')) \
+			or isinstance(kwargs.get('Complete'), datetime.datetime) \
+			or isinstance(kwargs.get('Complete'), str):
 			kwargs['Complete'] = datetime.datetime.now()
-		else: kwargs['Complete'] = None
+			kwargs['State'] = SONADOR_WORKLIST_STATUS_COMPLETED
+		
+		# Prevent changing state away from completed/cancelled once set
+		if _update and obj.state in [SONADOR_WORKLIST_STATUS_COMPLETED, SONADOR_WORKLIST_STATUS_CANCELLED]:
+			if state != obj.state:
+				emsg = f'Cannot change state from {obj.state}. Worklist items cannot be modified once marked as completed or cancelled.'
+				err = PydanticValidationError.from_exception_data(emsg, line_errors=[
+					InitErrorDetails(
+						type=PydanticCustomError(sonador_api.SONAODR_OBJECT_INVALID_ERROR, emsg),
+						loc=('State',), input={ 'State': state },
+						msg=emsg),
+				])
+				raise err 
+		
+		# Automatically populate complete field when state becomes completed or cancelled
+		state = kwargs.get('State')
+		if state in [SONADOR_WORKLIST_STATUS_COMPLETED, SONADOR_WORKLIST_STATUS_CANCELLED]:
+			
+			# If transitioning to completed/cancelled state, set complete timestamp
+			if not kwargs.get('Complete'):
+				kwargs['Complete'] = datetime.datetime.now()
+		
+		elif state in [SONADOR_WORKLIST_STATUS_SCHEDULED, SONADOR_WORKLIST_STATUS_INPROGRESS]:
+			
+			# If transitioning to scheduled/in-progress, clear complete timestamp
+			kwargs['Complete'] = None
  
 		# Ensure that group provided in the update request matches the value in the database.
 		if _update and group != obj.group:
@@ -122,16 +159,6 @@ class WorklistItemValidationForm(SonadorGroupValidationMixin, SonadorUserValidat
 					type=PydanticCustomError(sonador_api.SONAODR_OBJECT_INVALID_ERROR, emsg),
 					loc=('Group',), input={ 'Group': group },
 					msg=emsg),
-			])
-			raise err 
-
-		# If an item has a complete timestamp, prevent modification.
-		if _update and obj.complete:
-			emsg = 'Worklist item marked as complete. Worklist items cannot be modified once they are set as complete.'
-			err = PydanticValidationError.from_exception_data(emsg, line_errors=[
-				InitErrorDetails(
-					type=PydanticCustomError(sonador_api.SONAODR_OBJECT_INVALID_ERROR, emsg),
-					loc=('Complete',), msg=emsg),
 			])
 			raise err 
 

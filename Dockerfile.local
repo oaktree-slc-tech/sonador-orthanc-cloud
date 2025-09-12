@@ -1,5 +1,5 @@
 # syntax = docker/dockerfile:experimental
-FROM oaktreetech/orthanc-s3:25.2.0
+FROM oaktreetech/orthanc-s3
 ARG CI_COMMIT_SHA
 ARG CLI_CI_COMMIT_SHA
 

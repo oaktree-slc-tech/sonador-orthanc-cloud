@@ -8,6 +8,7 @@ from pydicom.datadict import dictionary_keyword, dictionary_VR
 import client.apisettings as gcapicodes
 from client.apisettings import AUTH
 from client.errors import ConfigurationError
+from client.utils.object import pick, omit
 
 from sonador.apisettings import DICOM_VR_DESCRIPTION, DCM_MODALITIES, DCMHEADER_MODALITY
 from sonador.serialization import SonadorJsonEncoder
@@ -24,28 +25,34 @@ from ..apisettings import VERSION, SONADOR_CACHE_COUNT_PATIENT, SONADOR_CACHE_CO
 from ..db.cache import CacheSeries, CacheStudy, CachePatient
 
 from .base import OrthancBaseView
+from .secure_user import UserContextMixin
 
 logger = logging.getLogger(__name__)
 
 
-class SonadorOrthancSystemReportView(OrthancBaseView):
+class SonadorOrthancSystemReportView(UserContextMixin, OrthancBaseView):
 	'''	View instance showing Orthanc and Sonador components
 	'''
 	orthanc_conf = None
-	servermanager = None
+	sonador_manager = None
 
 	def setup(self, output, uri, request, *args, **kwargs):
 		super().setup(output, uri, request)
 
 		if not self.orthanc_conf:
 			raise ConfigurationError('Unable to initialize system view, invalid Orthanc configuration.')
-		if not self.servermanager:
+		if not self.sonador_manager:
 			raise ConfigurationError('Unable to initialize system view, invalid Orthanc server manager.')
 
-	def get(self, output, uri, request):
+	def get(self, output, uri, request, *args, **kwargs):
 		'''	Retrieve Orthanc system details: plugins, config, security settings, and available DICOM tags.
 			Add Sonador specific settings.			
 		'''
+		# Retrieve user details to filter system details: requests without headers are Orthanc internal
+		# requests and retrieving the user context should be skipped.
+		if request.get('headers'):
+			self.init_user_context(request, *args, **kwargs)
+
 		# Retrieve active plugins
 		sys_info = json.loads(orthanc.RestApiGet('/system'))
 		sys_info[ORTHANC_CONFIG_ACTIVE_PLUGINS] = json.loads(orthanc.RestApiGet('/plugins'))
@@ -57,7 +64,7 @@ class SonadorOrthancSystemReportView(OrthancBaseView):
 			sys_info[ORTHANC_CONFIG_HTTP_SERVER_SECURE]= True
 
 		# Sonador/Orthanc Version
-		sys_info[ORTHANC_SONADOR_CONFIG_URL] = self.servermanager.server.url
+		sys_info[ORTHANC_SONADOR_CONFIG_URL] = self.sonador_manager.server.url
 		sys_info[ORTHANC_SONADOR_VERSION] = VERSION
 
 		# Add private main DICOM tags to response		
@@ -65,7 +72,7 @@ class SonadorOrthancSystemReportView(OrthancBaseView):
 			sys_info[SONADOR_CONF_PRIVATE_TAGS] = OrderedDict()
 
 			def _private_hexcode(private_header, sep=','):
-				_ptagdef = self.servermanager.tags.tag2def(private_header)
+				_ptagdef = self.sonador_manager.tags.tag2def(private_header)
 				return sep.join(_ptagdef.hex) if _ptagdef else None
 
 			for rtype, dcm_tags in self.orthanc_conf.get(SONADOR_CONF_PRIVATE_TAGS, {}).items():
@@ -79,19 +86,25 @@ class SonadorOrthancSystemReportView(OrthancBaseView):
 		if sys_kafka and sys_kafka.get(SONADOR_CONF_KAFKA_TOPIC):
 			sys_info['SonadorKafka'] = { 'Enabled': True, 'DcmTopic': sys_kafka.get(SONADOR_CONF_KAFKA_TOPIC) }
 
+		# Filter sensitive system details
+		if getattr(self, 'user', None) and not self.user.is_superuser:
+			sys_info = omit(sys_info, ('OrthancDatabase', 'UserMetadata', 'HttpPort', 'DicomAet',
+				'MaximumPatientCount', 'MaximumStorageMode', 'MaximumStorageSize', 'name', 'OverwriteInstances',
+				'PluginsEnabled', 'ReadOnly', 'StorageAreaPlugin', 'SonadorUrl', 'SonadorKafka'))
+
 		return self.send_response(json.dumps(sys_info, cls=SonadorJsonEncoder))
 
 
 class SonadorOrthancSystemStatusView(OrthancBaseView):
 	'''	Test current status of the system: Sonador and database connection
 	'''
-	servermanager = None
+	sonador_manager = None
 	sessionmaker = None
 
 	def setup(self, output, uri, request, *args, **kwargs):
 		super().setup(output, uri, request)
 
-		if not self.servermanager:
+		if not self.sonador_manager:
 			raise ConfigurationError('Unable to initialize status view, invalid Orther server manager.')
 		if not self.sessionmaker:
 			raise ConfigurationError('Unable to initialize status view, invalid session maker instance.')
@@ -103,7 +116,7 @@ class SonadorOrthancSystemStatusView(OrthancBaseView):
 
 		# Check connection to Sonador
 		try:
-			iserver = self.servermanager.server.get_imageserver(self.servermanager.imageserver_id)
+			iserver = self.sonador_manager.server.get_imageserver(self.sonador_manager.imageserver_id)
 			response[ORTHANC_SONADOR_CONNECTION] = {
 				gcapicodes.OPRESULT: gcapicodes.SUCCESS,
 				'ts': datetime.datetime.utcnow(),
@@ -117,8 +130,8 @@ class SonadorOrthancSystemStatusView(OrthancBaseView):
 				'ts': datetime.datetime.utcnow(),
 				gcapicodes.STATUS: ORTHANC_CONNECTION_STATE_OFFLINE,
 				gcapicodes.ERROR: 'Unable to connect to Sonador instance "%s" due to an error:\n%s'
-					% (self.servermanager.server.url, err),
-				ORTHANC_SONADOR_CONFIG_URL: self.servermanager.server.url,
+					% (self.sonador_manager.server.url, err),
+				ORTHANC_SONADOR_CONFIG_URL: self.sonador_manager.server.url,
 			}
 
 		# Check connection to database
@@ -200,13 +213,13 @@ class SonadorOrthancDicomTagsView(OrthancBaseView):
 
 		```
 	'''
-	servermanager = None
+	sonador_manager = None
 	sessionmaker = None
 
 	def setup(self, output, uri, request, *args, **kwargs):
 		super().setup(output, uri, request)
 
-		if not self.servermanager:
+		if not self.sonador_manager:
 			raise ConfigurationError('Unable to initialize status view, invalid Orther server manager.')
 		if not self.sessionmaker:
 			raise ConfigurationError('Unable to initialize status view, invalid session maker instance.')
@@ -214,7 +227,7 @@ class SonadorOrthancDicomTagsView(OrthancBaseView):
 	def dcm_tagdata(self, dcmtag, sep=','):
 		'''	Retrieve data for the provided tag
 		'''
-		_tag = self.servermanager.tags.code2def(dcmtag)
+		_tag = self.sonador_manager.tags.code2def(dcmtag)
 
 		
 		# Tag details
@@ -237,7 +250,7 @@ class SonadorOrthancDicomTagsView(OrthancBaseView):
 		'''	Retrieve system configuration and create VR map of available tags.
 		'''
 		# Retrieve tags configuredin the main DICOM tags cache
-		sconfig = self.servermanager.get_internal_imageserver().system_info()
+		sconfig = self.sonador_manager.get_internal_imageserver().system_info()
 		dcmtags = sconfig.get('MainDicomTags', {})
 
 		for rtype,rtags in dcmtags.items():

@@ -7,15 +7,16 @@ from client.errors import ConfigurationError
 from sonador.apisettings import \
 	IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES
 from sonador.servers import SonadorServer
+from sonador.servers.base import OrthancServerBase
 from sonador.imaging.orthanc import ImagingPatient, ImagingStudy, ImagingSeries
 
 from sonador_orthanc_common.apisettings import ORTHANC_SERVER_ID
 from sonador_orthanc_common.helpers import init_sonador_server, \
 	orthancserver_get_patient, orthancserver_get_study, orthancserver_get_series, orthancserver_get_instance, \
-	orthancserver_sync_modalities, orthancserver_sync_dcmweb_remotes
+	orthancserver_sync_modalities
 
-from .apisettings import ORTHANC_MAINDICOM_TAGS_DEFAULT, ORTHANC_CONFIG_SECTION_EXTRADICOMTAGS, \
-	ORTHANC_DEFAULT_ENCODING
+from .apisettings import ORTHANC_MAINDICOM_TAGS_DEFAULT, ORTHANC_DEFAULT_ENCODING, \
+	ORTHANC_CONFIG_SECTION_DICOMWEB, ORTHANC_CONFIG_SECTION_EXTRADICOMTAGS
 from .manager import SonadorServerManager
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,8 @@ def init_postgresdb_connstr(postgres_config: dict, connection_template='postgres
 	)
 
 
-def init_postgresdb_conn(postgres_config: dict, pool_pre_ping=True, pool_recycle=300, **kwargs):
+def init_postgresdb_conn(postgres_config: dict, pool_pre_ping=True, 
+		pool_size=30, max_overflow=50, pool_timeout=60, pool_recycle=1800, **kwargs):
 	'''	 Initialize SQLalchemy engine and session maker
 	'''
 	from sqlalchemy import create_engine as sql_create_engine, MetaData as SqlMetaData
@@ -53,9 +55,14 @@ def init_postgresdb_conn(postgres_config: dict, pool_pre_ping=True, pool_recycle
 
 	# Create database connection string
 	sql_connstr = init_postgresdb_connstr(postgres_config, **kwargs)
+	pool_size = int(postgres_config.get('SonadorPoolSize', pool_size))
+	max_overflow = int(postgres_config.get('SonadorMaxPoolOverflow', max_overflow))
+	pool_timeout = int(postgres_config.get('SonadorPoolTimeout', pool_timeout))
+	pool_recycle = int(postgres_config.get('SonadorPoolRecycle', pool_recycle))
 
 	# Initialize SQL engine instance and OrthancSession class
-	orthanc_sqlengine = sql_create_engine(sql_connstr, pool_pre_ping=pool_pre_ping, pool_recycle=pool_recycle)
+	orthanc_sqlengine = sql_create_engine(sql_connstr, pool_pre_ping=pool_pre_ping, pool_recycle=pool_recycle,
+		pool_size=pool_size, max_overflow=max_overflow, pool_timeout=pool_timeout)
 	OrthancSession = sessionmaker(bind=orthanc_sqlengine)
 
 	return orthanc_sqlengine, OrthancSession
@@ -90,7 +97,35 @@ def orthanc_maindicom_tags(orthanc_conf, maindicom_tags_default=ORTHANC_MAINDICO
 	return cdicomtags
 
 
-def init_fetch_sonador_configuration_callback(sonador_servermanager: SonadorServerManager, 
+def orthancserver_sync_dcmweb_remotes(orthanc_conf, sonador_manager: SonadorServerManager, iserver: OrthancServerBase,
+		orthanc_default_encoding=ORTHANC_DEFAULT_ENCODING):
+	'''	Retrieve DICOMweb remotes which should be associated with the Orthanc server and sync against
+		those registered locally.
+	'''
+	dicomweb_conf = orthanc_conf.get(ORTHANC_CONFIG_SECTION_DICOMWEB, {})
+	dicomweb_plugin_root = dicomweb_conf.get('Root')
+	dicomweb_root = dicomweb_conf.get('SonadorDicomWebRoot') or dicomweb_plugin_root
+
+	# Retrieve DICOMweb remote list from Sonador
+	logger.info('Configure DICOMweb remotes: %s' % ', '.join(
+				"%s" % dcmweb.orthanc_name for dcmweb in iserver.dicomweb_remotes))
+	iserver_local = sonador_manager.get_internal_imageserver()
+	
+	# Create DICOMweb remote entry on imaging server instance
+	if dicomweb_conf.get('Enable'):
+
+		for dcmweb in iserver.dicomweb_remotes:
+			rurl = iserver_local.orthanc_apiurl(posixpath.join(dicomweb_plugin_root, 'servers', dcmweb.orthanc_name))
+			r = iserver_local._request_put(rurl, 'Unable to update DICOM-web instance="%s"' % dcmweb.orthanc_name, json={
+				'Url': dcmweb.dicomweb_url, 'Username': dcmweb.username, 'Password': dcmweb.password,
+			})
+
+			if not r.ok:
+				raise ValueError('Unable to update DICOMweb configuration. Status code: %s. Request content:\n%s'
+					% (r.status_code ,r.content.decode('utf-8')))
+
+
+def init_fetch_sonador_configuration_callback(orthanc_conf, sonador_servermanager: SonadorServerManager, 
 		orthanc_default_encoding=ORTHANC_DEFAULT_ENCODING):
 	'''	Initialize Sonador/Orthanc integration callback function. The integration callback
 		is a scheduled task that fetches the Orthanc configuration and updates the local Orthanc configuration.
@@ -100,7 +135,6 @@ def init_fetch_sonador_configuration_callback(sonador_servermanager: SonadorServ
 	def fetch_sonador_configuration():
 		'''	Retrieve configuration data from Sonador and update local cache
 		'''
-
 		# Ensure that the DICOMweb plugin is installed
 		logger.info('Sync Orthanc configuration from Sonador with local state')
 		rcheck = orthanc.RestApiGet('/plugins/dicom-web/')
@@ -112,7 +146,8 @@ def init_fetch_sonador_configuration_callback(sonador_servermanager: SonadorServ
 
 			# Apply DICOM and DICOMweb configuration from Sonador
 			orthancserver_sync_modalities(sonador_servermanager, iserver, orthanc_default_encoding=orthanc_default_encoding)
-			orthancserver_sync_dcmweb_remotes(sonador_servermanager, iserver, orthanc_default_encoding=orthanc_default_encoding)
+			orthancserver_sync_dcmweb_remotes(orthanc_conf, sonador_servermanager, iserver, 
+				orthanc_default_encoding=orthanc_default_encoding)
 
 		except Exception as err:
 			logger.error(

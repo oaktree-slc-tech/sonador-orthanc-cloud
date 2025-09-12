@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor as ThreadPool
 from client import apisettings as capicodes
 from client.errors import ConfigurationError, ResourceDoesNotExist
 from client.utils.object import pick
+from client.remote import request_client_error
 
 from sonador.servers import SonadorServer, SonadorImagingServer
 from sonador.servers.auth import SonadorGroupAccessControlListCollection
@@ -69,6 +70,41 @@ class OrthancCloudInternalImagingServer(OrthancInternalImagingServer):
 		'''	Create an API URL with the fully qualified domain of the imaging server
 		'''
 		return self.server.get_imageserver(self.pk).orthanc_apiurl(*args, **kwargs)
+
+	def introspect_resource_perms(self, resource_level, resource_uid, token_key, token_value,
+			dicom_uid=None, resource_uri=None, *args, **kwargs):
+		'''	Determine user access/permissions for the specified resource
+		'''
+		# Structure credentials in format expected by introspection API.
+		# Bearer tokens should be delivered to the API as a space separated string
+		# and the token key should be "Authorization"
+		if token_key.lower() == capicodes.AUTH_TOKEN_BEARER.lower():
+
+			# Combine Bearer keyword and token value to a single string
+			token_value = '%s %s' % (token_key, token_value)
+			token_key = capicodes.AUTH.title()
+
+		_rdata = {
+			'token-key': token_key, 'token-value': token_value, 
+			'level': (resource_level or '').lower(), 'orthanc-id': resource_uid,
+		}
+		if dicom_uid:
+			_rdata['dicom-uid'] = dicom_uid
+		if resource_uri:
+			_rdata['uri'] = resource_uri
+
+		r = requests.post(self.server.sonador_apiurl(
+			posixpath.join('auth/service/orthanc', self.pk, 'resource-acl')),
+			json=_rdata, headers=self.server.sonador_request_headers(**kwargs))
+
+		if not r.ok:
+			request_client_error(
+				('Unable to introspect resources permissions for level="%s" uid="%s" on '
+					+ 'Sonador server "%s". Status code: %s.') % (
+					resource_level, resource_uid, self.server.sonador_apiurl(''), r.status_code
+				), r)
+
+		return r
 
 
 class SonadorServerManager(BaseServerManager):

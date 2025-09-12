@@ -1,4 +1,14 @@
-''' API REST endpoints for the management of access to Orthanc resources
+''' API REST endpoints for the management of access to Orthanc resources. Resources in this
+	module are split into three different types:
+
+	*	Resource ACL policy API: endpoints used to create and manage user/group policies
+		for a resource. Policies grant permissions to users to view, modify, and manage
+		DICOM resources stored in Orthanc.
+	*	Resource ACL permission lookup API: endpoints used to retrieve a complete list
+		of permissions for a resource which account for both local (managed by Orthanc)
+		and global (pattern-based policies managed by Sonador) policies.
+	*	Orthanc Server (Admin) API: endpoints used by Sonador/Orthanc internals to 
+		perform resource authorization and lookup resource permissions.
 '''
 import logging, posixpath, pydicom, json, copy, datetime, uuid, traceback
 
@@ -12,8 +22,8 @@ from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, \
 	IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_IMAGE, \
 	IMAGING_SERVER_AUTHREQUEST_LEVEL_LOOKUP
 from sonador.serialization import SonadorJsonEncoder
-from sonador.servers.auth import ACL_PERM_VIEW, ACL_PERM_MODIFY, ACL_PERM_REMOVE, \
-	ACL_PERM_COMMENT_EDIT, ACL_PERM_COMMENT_VIEW, ACL_PERM_ACL, ACL_PERM_RESOURCE
+from sonador.servers.auth import SonadorUser, SonadorGroupCollection, ACL_PERM_VIEW, ACL_PERM_MODIFY, ACL_PERM_REMOVE, \
+	ACL_PERM_COMMENT_EDIT, ACL_PERM_COMMENT_VIEW, ACL_PERM_ACL, ACL_PERM_RESOURCE, ACL_PERM_ORTHANC_MAPPINGS
 
 from .. import apisettings as sonador_api
 
@@ -23,10 +33,12 @@ from ..db.auth import UserPatientAuth, GroupPatientAuth, \
 from ..db.internal import Resource, DicomIdentifiers
 from ..db.helpers import orthanc_auth_resourcejson, dcmuid_fetch_dicomidentifier_model
 
+from ..cache.web import ResourceBaseMixin
+
 from ..web.base import OrthancBaseView
 from ..web.ext import ResourceChildManagementBaseView, ResourceChildBaseRestView
 from ..web.dicomweb import DicomResourceMixin, DicomUidJsonMixin
-from ..web.secure_user import UserLookupMixin, GroupLookupMixin
+from ..web.secure_user import UserContextMixin, UserLookupMixin, GroupLookupMixin
 
 from ..validation.base import OrthancViewValidationMixin
 from ..validation.auth import AuthValidationForm, AuthExtendedValidationForm, SonadorResourceAuthorizationRequest, \
@@ -34,6 +46,9 @@ from ..validation.auth import AuthValidationForm, AuthExtendedValidationForm, So
 
 logger = logging.getLogger(__name__)
 
+
+
+# Resource ACL Policy API Endpoints
 
 class AuthJsonMixin(GroupLookupMixin, UserLookupMixin):
 	'''	Mixin which provides properties and methods to help serialize ACL data to JSON
@@ -220,9 +235,123 @@ class AuthDICOMRestView(DicomUidJsonMixin, DicomResourceMixin, AuthRestView):
 		self._init_dicom_json(*args, **kwargs)
 
 
+
+# Resource ACL Permission Lookup API Endpoints
+
+
+class AuthResourcePermissionLookupView(ResourceBaseMixin, OrthancBaseView):
+	''' Orthanc view used to retrieve access permissions for the requested resource:
+		view, modify, remove, acl, comment_edit, comment_view.
+	'''
+	sonador_manager = None
+	sessionmaker = None
+	resource_cachemodel = None
+
+	def setup(self, *args, **kwargs):
+
+		if not self.sonador_manager:
+			raise ConfigurationError('Unable to initialize AuthResourcePermissionLookupView, invalid Sonador manager instance')
+		if not self.sessionmaker:
+			raise ConfigurationError('Unable to initialize AuthResourcePermissionLookupView, invalid session maker instance')
+
+		if not self.resource_cachemodel:
+			raise ConfigurationError('Unable to initialize AuthResourcePermissionLookupView, invalid resource cache model')
+		
+		self.init_resource_mixin(
+			resource_type=self.resource_cachemodel.type, resource_code=self.resource_cachemodel.code)
+
+		super().setup(*args, **kwargs)
+
+	def get_resource_permissions(self, r, *args, **kwargs):
+		'''	Retrieve permissions for the resource
+		'''
+		_iserver = self.sonador_manager.get_internal_imageserver()
+		perms = kwargs.get('perms') or { 'perms': {}}
+
+		# Introspect resource permissions
+		_creds = self.get_user_creds(self.request, *args, **kwargs)
+		_r = _iserver.introspect_resource_perms(self.resource_cachemodel.type, r.publicid, _creds[0], _creds[1])
+
+		# Retrieve user/group and resource details
+		_rjson = omit(_r.json(), ('user',))
+		self.user = SonadorUser(_iserver, _rjson.get('user', {}))
+		self.groups = SonadorGroupCollection(_iserver, self.user._objectdata.get('groups', []))
+		
+		# Add resource level and UID to response
+		if not perms.get('Level'):
+			perms['Level'] = self.resource_cachemodel.type
+		if not perms.get('ID'):
+			perms['ID'] = r.publicid
+
+		# Map permissions schema from Sonador to permissions schema for Orthanc
+		for _p,_a in _rjson.get('perms', {}).items():
+			if ACL_PERM_ORTHANC_MAPPINGS.get(_p):
+				perms['perms'][ACL_PERM_ORTHANC_MAPPINGS.get(_p)] = _a
+
+		return perms
+
+	def get(self, output, uri, request, *args, **kwargs):
+		''' Retrieve permissions/grants for the requested resource
+		'''
+		response = kwargs.get('response', {})
+
+		try: 
+
+			# Retrieve resource instance
+			with self.sessionmaker() as session:
+				r = self.get_resource(session, *args, **kwargs)
+
+			return self.send_response(json.dumps(self.get_resource_permissions(r, *args, **kwargs)))
+
+		# Instance does not exist
+		except ResourceDoesNotExist as err:
+			response.update({
+				gcapicodes.ERROR: 'Resource resource=%s uid=%s does not exist' % (
+					self.resource_cachemodel.type, self.get_resource_uid(*args, **kwargs) or '(none)'),
+				gcapicodes.STATUS: gcapicodes.FAIL,
+			})
+			return self.http404_resource_not_found(response=response)
+
+		# Internal error/exception
+		except Exception as err:
+			emsg = 'Server error (resource=%s uid=%s). Error: "%s".' % (
+				self.resource_cachemodel.type, self.get_resource_uid(*args, **kwargs) or '(none)', err)
+			response.update({ gcapicodes.ERROR: emsg, gcapicodes.STATUS: gcapicodes.FAIL, })
+			logger.error('%s\nTraceback: "%s"' % (emsg, traceback.format_exc()))
+			
+			return self.send_response(json.dumps(response, cls=SonadorJsonEncoder), status_code=500)
+
+
+class AuthDICOMResourcePermissionLookupView(DicomResourceMixin, UserContextMixin, AuthResourcePermissionLookupView):
+	'''	DICOMweb Resource Permission lookup view. Retrieve access permissions for the requested resource:
+		view, modify, remove, acl, comment_edit, comment_view.
+	'''
+	dicom_uid_header = None
+
+	def setup(self, *args, **kwargs):
+		super().setup(*args, **kwargs)
+
+		self.dicom_uid_header = kwargs.get('dicom_uid_header', self.dicom_uid_header)
+		if not self.dicom_uid_header:
+			raise ConfigurationError('Unable to initialize %s, invalid DICOM UID header attribute' % type(self).__name__)
+
+	def get_resource_permissions(self, r, *args, **kwargs):
+		'''	Retrieve permissions for the resource
+		'''
+		# Add DICOM header UID to the response
+		_rjson = super().get_resource_permissions(r, *args, **kwargs)
+		_rjson[self.dicom_uid_header] = self.get_resource_uid()		
+
+		return _rjson
+
+
+
+# Orthanc Server (Admin) API Endpoints
+
+
 class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseView):
 	'''	Sonador authorization request view. Used by the Sonador web application to query
-		the Orthanc database and retrieve information about
+		the Orthanc database and retrieve information about Orthanc managed (local) ACL pollicies.
 	'''
 	sonador_manager = None
 	sessionmaker = None

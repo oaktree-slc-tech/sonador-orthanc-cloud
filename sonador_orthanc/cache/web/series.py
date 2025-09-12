@@ -22,7 +22,7 @@ from ...db.helpers import cache_orthanc_seriesjson
 from ...dcmquery import CacheSeriesQueryMixin
 
 from ...web.queryview import DicomQueryBaseView
-from ...web.resource import SonadorResourceBaseView
+from ...web.resource import SonadorResourceMixin, SonadorResourceBaseView
 
 logger = logging.getLogger(__name__)
 
@@ -102,8 +102,8 @@ class CacheSeriesQueryView(CacheSeriesListBaseView):
 			}), status_code=500)
 
 
-class SonadorSeriesResourceView(SonadorResourceBaseView):
-	'''	Orthanc resource view for managing series data
+class SonadorSeriesResourceMixin(SonadorResourceMixin):
+	'''	Orthanc mixin class which provides properties for working with series objects from the Sonador resource cache.
 	'''
 	resource_base = 'series'
 	resource_cachemodel = CacheSeries
@@ -112,3 +112,9 @@ class SonadorSeriesResourceView(SonadorResourceBaseView):
 		'''	Add additional parameters to the response, based on request options
 		'''
 		return response
+
+
+class SonadorSeriesResourceView(SonadorSeriesResourceMixin, SonadorResourceBaseView):
+	'''	Orthanc resource view for managing series data
+	'''
+	

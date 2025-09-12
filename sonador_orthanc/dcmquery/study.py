@@ -1,6 +1,6 @@
 import logging
 
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, aliased
 from sqlalchemy import or_, and_
 
 from client.errors import ConfigurationError
@@ -35,11 +35,25 @@ class CacheStudyQueryMixin(object):
 			raise ConfigurationError(
 				'Unable to initialize, `series_date_filter` is a required property for the %s view' % type(self).__name__)
 
-	def apply_session_options(self, session, basequery, *args, **kwargs):
-		'''	Create join between primary and private DICOM cache tables and fetch both
+	def get_base_resourcelist(self, session, *args, **kwargs):
+		'''	Add explicit reference to parent (CachePatient)
 		'''
-		basequery = super().apply_session_options(session, basequery, *args, **kwargs)
-		return basequery.options(joinedload(self.resource_model.privatetags))
+		base = super().get_base_resourcelist(session, *args, **kwargs)
+
+		# Explicitly map patient table to prevent SQLAlchemy inserting an alias (incorrectly)
+		base = base.select_from(CacheStudy) \
+			.outerjoin(CachePatient, CachePatient.uid == CacheStudy.parent_id)
+		
+		return base
+
+	def apply_session_options(self, session, basequery, *args, **kwargs):
+		'''	Apply options to the base query. Provides a hook to load related data or apply modify
+			special database options.
+		'''
+		basequery = super().apply_session_options(session, basequery, *args, **kwargs) \
+			.options(joinedload(self.resource_model.privatetags))
+
+		return basequery
 
 	def apply_allfields_queryfilter(self, dcm_resources, allfields_queryfilter, **kwargs):
 		'''	Apply an "all fields" filter to the DICOM resource list

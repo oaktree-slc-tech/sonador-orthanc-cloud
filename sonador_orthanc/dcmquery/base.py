@@ -355,6 +355,10 @@ class DicomQueryMixin(ABC):
 		'''
 		orderby_fields = kwargs.get('orderby_fields') or []
 
+		# Retrieve any aliases associated with the query to ensure that ordering conditions
+		# get applied consistently.
+		_aliases = getattr(self, '_aliases', {})
+
 		# Retrieve dataabase field for provided header
 		for otag in order_by:
 
@@ -401,10 +405,14 @@ class DicomQueryMixin(ABC):
 				# Retrieve tag model and add to ordering options
 				tag_resource_model = SONADOR_CACHE_MODELS.get(resource_type)
 				if private_tag:
-					tag_resource_model = tag_resource_model.privatetags_resource_model			
+					tag_resource_model = tag_resource_model.privatetags_resource_model
 
-				orderby_fields.append(
-					tag_resource_model.orthanc[otag].astext.desc() if desc else tag_resource_model.orthanc[otag].astext)
+				if _aliases.get(tag_resource_model):
+					expr = _aliases[tag_resource_model].orthanc[otag].astext
+				else:
+					expr = tag_resource_model.orthanc[otag].astext
+
+				orderby_fields.append(expr.desc() if desc else expr)
 
 		return dcm_resources.order_by(*tuple(orderby_fields))
 
@@ -412,7 +420,8 @@ class DicomQueryMixin(ABC):
 		'''	Execute resource query
 		'''
 		# Filter results from cache
-		resources = self.apply_session_options(session, self.get_base_resourcelist(session, *args, **kwargs))
+		resources = self.apply_session_options(session, self.get_base_resourcelist(session, *args, **kwargs),
+			*args, **kwargs)
 
 		# Query all available fields
 		if self.dicom_query.get(DCM_QUERY_ALLFIELDS):
