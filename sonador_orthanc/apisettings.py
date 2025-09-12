@@ -1,11 +1,15 @@
 import posixpath
+
+from sonador.apisettings.worklists import SONADOR_WORKLIST_STATUS_SCHEDULED, \
+	SONADOR_WORKLIST_STATUS_INPROGRESS, SONADOR_WORKLIST_STATUS_COMPLETED, \
+	SONADOR_WORKLIST_STATUS_CANCELLED
 from sonador_orthanc_common.apisettings import *
 
 from client import apisettings as gapi
 
 
 # Sonador/Orthanc Plugin Version
-VERSION = '0.4-beta1'
+VERSION = '0.4-rc1'
 
 # Sonador Cache Index Status Codes
 SONADOR_CACHE_STATUS_CURRENT = 'current'
@@ -53,6 +57,7 @@ SONADOR_CONF_CACHE_THREADS_COUNT = 'CacheThreadsCount'
 
 # Query Request Components
 SONADOR_CACHE_ORDER_BY = 'OrderBy'
+REQUIRE_EXPLICIT_ACCESS_QUERY_PARAM = 'requireExplicitAccess'
 
 
 
@@ -95,3 +100,16 @@ SONADOR_KAFKA_OPCODE_PUSH_IMAGE = 'kafka-export.instance'
 SONADOR_KAFKA_OPCODE_PUSH_WORKLIST = 'kafka-export.study-worklist'
 SONADOR_KAFKA_OPCODE_PUSH_STUDY_COMMENT = 'kafka-export.study-comment'
 SONADOR_KAFKA_OPCODE_PUSH_SERIES_COMMENT = 'kafka-export.series-comment'
+
+
+
+# Worklist Virtual Status Codes
+SONADOR_WORKLIST_VIRTUAL_STATUS_OPEN = 'Open'
+SONADOR_WORKLIST_VIRTUAL_STATUS_ALL = 'All'
+SONADOR_WORKLIST_STATUS_SUPPORTED = (
+	SONADOR_WORKLIST_STATUS_SCHEDULED, 
+	SONADOR_WORKLIST_STATUS_INPROGRESS,
+	SONADOR_WORKLIST_STATUS_COMPLETED,
+	SONADOR_WORKLIST_STATUS_CANCELLED
+)
+SONADOR_WORKLIST_STATUS_SUPPORTED_LOWERCASE = dict([(s.lower(), s) for s in SONADOR_WORKLIST_STATUS_SUPPORTED])

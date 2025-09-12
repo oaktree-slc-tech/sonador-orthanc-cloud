@@ -26,7 +26,7 @@ from ...db.helpers import cache_orthanc_studyjson
 from ...dcmquery import CacheStudyQueryMixin
 
 from ...web.queryview import DicomQueryBaseView
-from ...web.resource import SonadorResourceBaseView
+from ...web.resource import SonadorResourceMixin, SonadorResourceBaseView
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class CacheStudyListBaseView(CacheStudyQueryMixin, DicomQueryBaseView):
 	def apply_session_options(self, session, basequery, *args, **kwargs):
 		'''	Fetch study parent (patient) via joinedload
 		'''
+		basequery = super().apply_session_options(session, basequery, *args, **kwargs)
 		return basequery.options(joinedload(self.resource_model.parent))
 
 
@@ -110,8 +111,9 @@ class CacheStudyQueryView(CacheStudyListBaseView):
 			}), status_code=500)
 
 
-class SonadorStudyResourceView(SonadorResourceBaseView):
-	'''	Orthanc resource view for managing study data
+class SonadorStudyResourceMixin(SonadorResourceMixin):
+	'''	Orthanc mixin class which provides properties for working with study objects from the Sonador
+		resource cache.
 	'''
 	resource_base = 'studies'
 	resource_cachemodel = CacheStudy
@@ -149,3 +151,8 @@ class SonadorStudyResourceView(SonadorResourceBaseView):
 				response[IMAGING_SERVER_REQUESTED_TAGS] = _request_tagdata
 
 		return response
+
+
+class SonadorStudyResourceView(SonadorStudyResourceMixin, SonadorResourceBaseView):
+	'''	Orthanc resource view for managing study data
+	'''

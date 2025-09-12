@@ -33,10 +33,16 @@ class SecureResourceQueryViewMixin:
 		'''	Retrieve base query for the view
 		'''
 		dcm_resources = super().get_base_resourcelist(session, *args, **kwargs)
+		return dcm_resources
+
+	def apply_session_options(self, session, basequery, *args, force_apply_queryfilter=False, **kwargs):
+		''' Apply ACL filtering
+		'''
+		dcm_resources = super().apply_session_options(session, basequery, *args, **kwargs)
 
 		# If the user associated with the request does not have a "query" permission, 
 		# filter the resources by ACL policies.
-		if not ACL_PERM_QUERY in getattr(self.user, 'permissions', []):
+		if not ACL_PERM_QUERY in getattr(self.user, 'permissions', []) or force_apply_queryfilter:
 			dcm_resources = self.apply_acl_queryfilter(
 				dcm_resources, self.user, self._get_user_aclgroups(*args, **kwargs), **kwargs)
 

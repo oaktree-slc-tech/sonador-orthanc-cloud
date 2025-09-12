@@ -1,4 +1,4 @@
-FROM orthancteam/orthanc:25.2.0-full
+FROM orthancteam/orthanc:25.8.2-full
 
 # The Osimis "full" image contains all cloud storage plugins along
 ARG CI_COMMIT_SHA

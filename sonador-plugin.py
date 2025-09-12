@@ -80,7 +80,7 @@ ORTHANC_SONADOR_MANAGER.register_server()
 # Retrieve Sonador configuration for the imaging server
 from sonador_orthanc.helpers import init_fetch_sonador_configuration_callback
 
-fetch_sonador_configuration = init_fetch_sonador_configuration_callback(ORTHANC_SONADOR_MANAGER)
+fetch_sonador_configuration = init_fetch_sonador_configuration_callback(CONF, ORTHANC_SONADOR_MANAGER)
 ORTHANC_SONADOR_MANAGER.register_recurring_task(TIMER_10MIN, fetch_sonador_configuration)
 
 
@@ -127,6 +127,11 @@ def orthanc_sonador_onstart(changeType, level, resource):
 	# Initialize Sonador remote configuration agent
 	orthanc.LogWarning('Start Sonador Server Manager scheduler')
 	try:
+
+		# Initialize system DICOMweb endpoints
+		import sonador_orthanc.web.dicomweb as sonador_dicomweb
+		sonador_dicomweb.init_dcmweb_system_endpoints(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
+
 		fetch_sonador_configuration()
 		ORTHANC_SONADOR_MANAGER.start()
 
@@ -254,11 +259,11 @@ def orthanc_sysinfo_onstart(changeType, level, resource):
 	orthanc.LogWarning('Enable Sonador/Orthanc system views')
 
 	orthanc.RegisterRestCallback(
-		'/system', SonadorOrthancSystemReportView.as_view(orthanc_conf=CONF, servermanager=ORTHANC_SONADOR_MANAGER))
+		'/system', SonadorOrthancSystemReportView.as_view(orthanc_conf=CONF, sonador_manager=ORTHANC_SONADOR_MANAGER))
 	orthanc.RegisterRestCallback('/system/status', SonadorOrthancSystemStatusView.as_view(
-			servermanager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
+			sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
 	orthanc.RegisterRestCallback(SONADOR_CACHE_TAGS_URL, SonadorOrthancDicomTagsView.as_view(
-		servermanager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
+		sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
 
 
 ORTHANC_SONADOR_MANAGER.register_serverchange_callback(

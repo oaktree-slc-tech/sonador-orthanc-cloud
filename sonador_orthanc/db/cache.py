@@ -3,10 +3,10 @@ from typing import Union, Sequence
 from collections import OrderedDict
 
 from sqlalchemy import Column, ForeignKey, Integer as SqlInteger, String as SqlString, \
-	DateTime as SqlDateTime, Boolean as SqlBoolean
+	DateTime as SqlDateTime, Boolean as SqlBoolean, select
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy_json import mutable_json_type
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, column_property
 
 from client.utils.object import pick
 from client.utils.decorators import classproperty

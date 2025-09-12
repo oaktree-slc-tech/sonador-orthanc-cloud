@@ -703,7 +703,7 @@ class AdminRebuildCacheView(CacheBulkIndexBaseView):
 			# Rebuild operation successful
 			status_code = 200
 
-		except Excetion as err:
+		except Exception as err:
 			if not response.get(gcapicodes.ERRORS):
 				response[gcapicodes.ERRORS] = []
 
