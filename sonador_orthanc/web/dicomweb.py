@@ -710,13 +710,14 @@ def init_distortionfilter_endpoints(orthanc_conf, sonador_manager, OrthancSessio
 	orthanc.LogWarning('Enabling DICOMweb distortion filter endpoints: %s' % posixpath.join(dicomweb_root, 'distortion-filter'))
 
 	# Distortion Filter: Device Management API
-	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'distortion-filter/devices'),
+	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'groups/[0-9]+/distortion-filter/devices'),
 		DistortionFilterDeviceManagementView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
-	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'distortion-filter/devices/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'),
+	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, 
+			r'groups/[0-9]+/distortion-filter/devices/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'),
 		DistortionFilterDeviceRestView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
 
 	# Distortion Filter: Apply Filter
-	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'distortion-filter/(\d+(\.\d+)+)'),
+	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'groups/[0-9]+/distortion-filter/(\d+(\.\d+)+)'),
 		DeviceDistortionDICOMView.as_view(
 			sonador_manager=sonador_manager, sessionmaker=OrthancSession, resource_cachemodel=CacheStudy,
 			dicom_uid_header=DCMHEADER_STUDY_INSTANCE_UID))

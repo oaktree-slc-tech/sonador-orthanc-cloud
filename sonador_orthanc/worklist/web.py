@@ -240,6 +240,7 @@ class StudyReviewerWorklistItemRestView(StudyReviewerWorklistJsonMixin, KafkaMix
 			**pick(self, ('sonador_manager', 'resource_cachemodel', 'model')),
 			'parent_resource_obj': self.get_resource(**kwargs),
 		})
+		
 		# Logic to check if comments exist in the request
 		if self.POST.get('Comment'):
 			self.init_user_context(self.request)

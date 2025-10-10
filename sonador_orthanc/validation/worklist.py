@@ -7,8 +7,7 @@ from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from client.utils.object import gextend, omit
 from client.utils.conversion import str2bool
-from client.errors import ClientOperationError
-from client.errors import ConfigurationError
+from client.errors import ClientOperationError, ConfigurationError
 
 from sonador.apisettings.worklists import SONADOR_WORKLIST_STATUS_SCHEDULED, SONADOR_WORKLIST_STATUS_INPROGRESS, \
 	SONADOR_WORKLIST_STATUS_COMPLETED, SONADOR_WORKLIST_STATUS_CANCELLED

@@ -158,11 +158,16 @@ class ObjectManagementBaseView(OrthancViewValidationMixin, ObjectViewMixin, Orth
 
 			# Retrieve child objects for the provided resource
 			with self.sessionmaker() as session:
+
+				# Response and status code
+				_response = [
+					self.orthanc_objectjson(c) for c in self.get_objects(session, **self.get_objects_kwargs(*args, session=session, **kwargs))
+				]
+				_status = self.success_status_code
 				
 				# Query database for child objects related to the current resource
-				return self.send_response(json.dumps([
-					self.orthanc_objectjson(c) for c in self.get_objects(session, **self.get_objects_kwargs(*args, session=session, **kwargs))
-				], cls=self.json_cls))
+				return self.send_response(json.dumps(_response, cls=self.json_cls), status_code=_status,
+					headers=self.get_response_headers(_response, _status, gcapicodes.HTTP_GET, *args, **kwargs))
 
 		except ResourceDoesNotExist as err:			
 			response = {
@@ -185,6 +190,11 @@ class ObjectManagementBaseView(OrthancViewValidationMixin, ObjectViewMixin, Orth
 		return form_instance.save(
 			session, self.init_object_model(**self.init_object_kwargs(*args, session=session, **kwargs)))
 
+	def get_response_headers(self, response, status_code, method, *args, **kwargs):
+		'''	Retrieve headers for the response
+		'''
+		return {}
+
 	def post(self, output, uri, request, *args, **kwargs):
 		''' Create new child object for the resource
 		'''	
@@ -195,10 +205,16 @@ class ObjectManagementBaseView(OrthancViewValidationMixin, ObjectViewMixin, Orth
 				form_instance = self.validate_form_data(session, *args, **kwargs)
 				obj = self.save_object_data(session, form_instance, *args, **kwargs)
 
-				return self.send_response(json.dumps({
+				# Response and status code
+				_response = {
 					self.model_pk_attr: obj.uid, gcapicodes.STATUS: gcapicodes.SUCCESS,
 					gcapicodes.OBJECT_DATA: self.orthanc_objectjson(obj),
-				}, cls=SonadorJsonEncoder), status_code=self.success_status_code)
+				}
+				_status = self.success_status_code
+
+				# Create HTTP response
+				return self.send_response(json.dumps(_response, cls=SonadorJsonEncoder), status_code=_status,
+					headers=self.get_response_headers(_response, _status, gcapicodes.HTTP_POST, *args, **kwargs))
 
 		# Resource does not exist: 404
 		except ResourceDoesNotExist as err:
@@ -225,7 +241,7 @@ class ObjectManagementBaseView(OrthancViewValidationMixin, ObjectViewMixin, Orth
 
 
 class ObjectBaseRestView(OrthancViewValidationMixin, ObjectViewMixin, OrthancBaseView):
-	'''	Orthanc view instance which acn be used to retrieve details (GET), udpate (PUT), or
+	'''	Orthanc view instance which can be used to retrieve details (GET), udpate (PUT), or
 		remove (DELETE) an ext object. Includes abstract methods which must be implemented in a sub-class.
 	'''
 	def setup(self, output, uri, request, *args, **kwargs):
@@ -301,17 +317,25 @@ class ObjectBaseRestView(OrthancViewValidationMixin, ObjectViewMixin, OrthancBas
 		'''
 		return {}
 
+	def get_response_headers(self, response, status_code, method, *args, **kwargs):
+		'''	Retrieve headers for the response
+		'''
+		return {}
+
 	def get(self, output, uri, request, *args, **kwargs):
 		''' Retrieve child object
 		'''
 		try:
 			with self.sessionmaker() as session:
 
+				# Response and status code
+				_response = self.orthanc_objectjson(
+					self.get_object(session, **self.get_object_kwargs(*args, session=session, **kwargs)))
+				_status = 200
+
 				# Retrieve requested child object
-				return self.send_response(
-					json.dumps(self.orthanc_objectjson(
-						self.get_object(session, **self.get_object_kwargs(*args, session=session, **kwargs))), 
-					cls=self.json_cls))
+				return self.send_response(json.dumps(_response, cls=self.json_cls), status_code=_status,
+					headers=self.get_response_headers(_response, _status, gcapicodes.HTTP_GET, *args, **kwargs))
 
 		except ResourceDoesNotExist as err:
 			response = ({
@@ -349,8 +373,12 @@ class ObjectBaseRestView(OrthancViewValidationMixin, ObjectViewMixin, OrthancBas
 				_form = self.validate_form_data(session, obj, **kwargs)
 				obj = self.save_object_data(session, obj, _form)
 
-				return self.send_response(json.dumps(
-					self.update_response_json(obj, *args, **kwargs), cls=self.json_cls))
+				# Response and status code
+				_response = self.update_response_json(obj, *args, **kwargs)
+				_status = 200
+
+				return self.send_response(json.dumps(_response, cls=self.json_cls), status_code=_status,
+					headers=self.get_response_headers(_response, _status, gcapicodes.HTTP_PUT, *args, **kwargs))
 
 		# Validation error
 		except PydanticValidationError as err:
@@ -394,8 +422,12 @@ class ObjectBaseRestView(OrthancViewValidationMixin, ObjectViewMixin, OrthancBas
 				session.delete(obj)
 				session.commit()
 
-				return self.send_response(json.dumps(
-					self.delete_response_json(obj, *args, **kwargs), cls=self.json_cls))
+				# Response and status code
+				_response = self.delete_response_json(obj, *args, **kwargs)
+				_status = 200
+
+				return self.send_response(json.dumps(_response, cls=self.json_cls), status_code=_status,
+					headers=self.get_response_headers(_response, _status, gcapicodes.HTTP_DELETE, *args, **kwargs))
 
 		except ResourceDoesNotExist as err:
 			response = ({
