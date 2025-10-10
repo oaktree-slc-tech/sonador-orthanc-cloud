@@ -212,11 +212,11 @@ def orthanc_cache_onstart(changeType, level, resource):
 	# Distortion filter
 	from sonador_orthanc.web.distortionfilter import DistortionFilterDeviceManagementView, DistortionFilterDeviceRestView, DistortionFilterView
 
-	orthanc.RegisterRestCallback(r'/distortion-filter/devices',
-		DistortionFilterDeviceManagementView.as_view(sessionmaker=OrthancSession))
-	orthanc.RegisterRestCallback(r'/distortion-filter/devices/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
-		DistortionFilterDeviceRestView.as_view(sessionmaker=OrthancSession))
-	orthanc.RegisterRestCallback(r'/distortion-filter/([0-9a-fA-F]{8}\-?){5}',
+	orthanc.RegisterRestCallback(r'/groups/[0-9]+/distortion-filter/devices',
+		DistortionFilterDeviceManagementView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
+	orthanc.RegisterRestCallback(r'/groups/[0-9]+/distortion-filter/devices/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
+		DistortionFilterDeviceRestView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
+	orthanc.RegisterRestCallback(r'/groups/[0-9]+/distortion-filter/([0-9a-fA-F]{8}\-?){5}',
 		DistortionFilterView.as_view(sonador_manager=ORTHANC_SONADOR_MANAGER, sessionmaker=OrthancSession))
 
 	# Tags

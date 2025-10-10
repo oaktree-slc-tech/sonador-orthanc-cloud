@@ -5,7 +5,7 @@ import logging, traceback, abc
 from client import apisettings as capi
 from client.errors import ConfigurationError, ResourceDoesNotExist, ClientOperationError
 
-from sonador.apisettings.base import IMAGING_SESRVER_GROUP_UID_REGEX
+from sonador.apisettings.base import IMAGING_SERVER_GROUP_UID_REGEX
 from sonador.servers.auth import SonadorUser, SonadorGroupCollection, ACL_PERM_QUERY
 from sonador.errors import soandor_clientexception_server_errors
 
@@ -149,7 +149,7 @@ class GroupLookupMixin(GroupLookupBaseMixin):
 	'''	Mixin class which provides methods to lookup group instances: lookup queries only retrieve
 		groups which are associated with the imaging server instance.
 	'''
-	group_uid_regex = IMAGING_SESRVER_GROUP_UID_REGEX
+	group_uid_regex = IMAGING_SERVER_GROUP_UID_REGEX
 
 	def get_group_uid(self, *args, resource_uri=None, **kwargs):
 		'''	Retrieve group UID FROM THE url
