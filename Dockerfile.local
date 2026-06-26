@@ -1,12 +1,59 @@
 # syntax = docker/dockerfile:experimental
+
+
+FROM orthancteam/orthanc:26.6.1-full as build
+ARG AUTH_COMMIT_SHA
+
+# Install Dependencies
+#  - git + mercurial: the plugin's CMake fetches the Orthanc framework "mainline" via "hg"
+#  - libjsoncpp-dev: Orthanc uses jsoncpp (NOT json-rpc-cpp) for JSON
+#  - libpugixml-dev: required by the Orthanc framework core
+#  - libboost-all-dev: covers all Boost components the framework links
+#  - libcurl4-openssl-dev + libssl-dev: required because ENABLE_WEB_CLIENT is ON
+#  - zlib1g-dev / uuid-dev: framework core dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git mercurial build-essential cmake curl unzip tar ca-certificates \
+    libjsoncpp-dev libpugixml-dev libboost-all-dev \
+    libcurl4-openssl-dev libssl-dev zlib1g-dev uuid-dev \
+  && mkdir -p /tmp/orthanc
+
+# Create and install plugin, cleanup
+RUN cd /tmp/orthanc \
+  && export AUTH_COMMIT_SHA=${AUTH_COMMIT_SHA:-master} \
+  && echo "Build container for Orthanc Advanced Auth Plugin $AUTH_COMMIT_SHA" \
+  && git clone https://code.oak-tree.tech/oak-tree/medical-imaging/orthanc-authorization.git auth && cd auth \
+  && git checkout $AUTH_COMMIT_SHA \
+  && mkdir -p /tmp/orthanc/build && cd /tmp/orthanc/build \
+  && cmake -DCMAKE_BUILD_TYPE=Release -DALLOW_DOWNLOADS=ON -DUSE_SYSTEM_GOOGLE_TEST=OFF -DUSE_SYSTEM_ORTHANC_SDK=OFF /tmp/orthanc/auth/ \
+  && make -j$(nproc) OrthancAuthorization \
+  && cp libOrthancAuthorization.* /usr/share/orthanc/plugins/
+
+
 FROM oaktreetech/orthanc-s3
 ARG CI_COMMIT_SHA
 ARG CLI_CI_COMMIT_SHA
+
+# Replace container authorization plugin with Sonador project authorization plugin.
+# The stock plugin ships in the (non-scanned) staging dir; the active scan dir is
+# /usr/share/orthanc/plugins/, so the rebuilt plugin must land there (mirrors orthanc-s3).
+RUN rm -rf /usr/share/orthanc/plugins/plugins-available/libOrthancAuthorization.so
+COPY --from=build /usr/share/orthanc/plugins/libOrthancAuthorization.* /usr/share/orthanc/plugins/
 
 # Install Python Requests Module and Other Dependencies
 RUN apt-get update && apt-get install -y git build-essential python3-requests libtiff5-dev libjpeg-dev zlib1g-dev \
   libfreetype6-dev liblcms2-dev libwebp-dev libharfbuzz-dev libfribidi-dev librdkafka-dev \
   tcl8.6-dev tk8.6-dev python3-tk libpq-dev
+
+# Pre-build pillow-jpls (a source-only, transitive dependency of highdicom 0.22.x, which
+# is pinned by the Sonador IO client and cannot move until pydicom 3 is adopted).
+# pillow-jpls 1.3.2 ships no Python 3.14 wheel, so pip builds it from source; its build
+# pins conan~=2.0.16, which predates GCC 15 and aborts configure with
+# "Invalid setting '15' is not a valid 'settings.compiler.version' value" (upstream
+# issue #44; GCC 15 support landed in Conan 2.16). Install a GCC-15-aware Conan and the
+# other build backends, then build with isolation disabled so OUR Conan/pybind11 are used
+# instead of the (too-old) pinned ones. pybind11 is bumped to a Python-3.14-aware release.
+RUN pip3 install --break-system-packages "conan>=2.16,<3" scikit-build-core "pybind11>=2.13" ninja cmake setuptools-scm \
+  && pip3 install --break-system-packages --no-build-isolation "pillow-jpls==1.3.2"
 
 # Install Sonador Python Plugin
 RUN mkdir -p /opt/orthanc/ \
@@ -16,6 +63,10 @@ RUN mkdir -p /opt/orthanc/ \
   && git clone https://code.oak-tree.tech/oak-tree/medical-imaging/orthanc-sonador.git \
   && cd orthanc-sonador && git checkout $CI_COMMIT_SHA \
   && git submodule update --init --recursive --remote \
+  # STOPGAP: the cloned repo still pins psycopg2-binary==2.9.3, which has no Python 3.14
+  # wheel and fails to compile against the 3.14 C API (_PyInterpreterState_Get removed).
+  # 2.9.12 ships cp314 wheels. Remove this sed once the bump is committed to orthanc-sonador.
+  && sed -i 's/^psycopg2-binary==2\.9\.3$/psycopg2-binary==2.9.12/' requirements.txt \
   && pip3 install --timeout 30 -r requirements.txt --break-system-packages
 
 # Install Sonador CLI Client
