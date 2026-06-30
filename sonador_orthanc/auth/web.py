@@ -47,6 +47,27 @@ from ..validation.auth import AuthValidationForm, AuthExtendedValidationForm, So
 logger = logging.getLogger(__name__)
 
 
+# Ancestor-traversal permission keys.
+#
+# The authorization plugin explodes a leaf modify/remove request (e.g. POST
+# /series/<id>/modify) into the full patient -> study -> series hierarchy and
+# requires EVERY level to be granted with the SAME method.  Under IncludeResourceUri
+# only the LEAF carries a non-empty uri; the ancestors arrive with an empty resource.
+# A modify/remove grant on the leaf does not (by design -- see _fetch_resource_policy)
+# propagate up the hierarchy, so the ancestor POST/DELETE checks would otherwise be
+# denied and reject the whole request.
+#
+# These keys carry a SEPARATE "may be traversed for a descendant modify/remove" signal
+# to the ancestor levels.  They are consumed ONLY by the empty-resource (ancestor)
+# branch of ResourceAuthorization.resource_perm; the leaf still enforces the real
+# `modify`/`remove` permission, so this does NOT grant a descendant-only user the
+# ability to modify/remove the ancestor directly (no privilege escalation).  Worklist
+# creation (POST /studies/<id>/worklists) relies on the same mechanism: its patient
+# ancestor is granted via the worklist exemption, which sets `modify` and therefore
+# `modify_traverse` below.
+ACL_PERM_MODIFY_TRAVERSE = 'modify_traverse'
+ACL_PERM_REMOVE_TRAVERSE = 'remove_traverse'
+
 
 # Resource ACL Policy API Endpoints
 
@@ -441,6 +462,26 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 
 		return policy
 
+	def _acl_effective_view(self, acl):
+		'''	Effective `view` permission for ancestor hierarchy traversal.
+
+			The authorization plugin explodes a sub-resource request into the full
+			patient -> study -> series hierarchy and requires EVERY ancestor level to grant
+			`view` so the request can resolve down to the leaf resource.  A comment permission on
+			a resource necessarily implies the ability to view (and therefore traverse to) that
+			resource, so a `comment_view` or `comment_edit` grant must contribute the `view` used
+			for ancestor resolution.  Without this, a local comment grant that is not also paired
+			with an explicit `view` is denied: the ancestor level finds no `view`, falls back to
+			the (empty) global policy, and the all-levels-must-pass plugin rule rejects the whole
+			request.
+		'''
+		if not acl:
+			return None
+
+		return getattr(acl, ACL_PERM_VIEW, None) \
+			or getattr(acl, ACL_PERM_COMMENT_VIEW, None) \
+			or getattr(acl, ACL_PERM_COMMENT_EDIT, None)
+
 	def _fetch_patient_policy(self, session, principal, level, uid, patient_authmodel, study_authmodel, series_authmodel,
 			permissions=ACL_PERM_RESOURCE, policy=None):
 		'''	Parse the request to an ACL policy for the desired patient.
@@ -480,12 +521,13 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 			.first()
 
 		# Set view permission: start with series, then inspect study. If either permission
-		# is true, then the policy should be set to view = True.
+		# is true, then the policy should be set to view = True. A comment grant on the child
+		# implies the `view` needed to traverse this ancestor patient (see _acl_effective_view).
 		if _series_acl:
-			policy[ACL_PERM_VIEW] = getattr(_series_acl, ACL_PERM_VIEW)
+			policy[ACL_PERM_VIEW] = self._acl_effective_view(_series_acl)
 		if _study_acl:
 			if not policy.get(ACL_PERM_VIEW):
-				policy[ACL_PERM_VIEW] = getattr(_study_acl, ACL_PERM_VIEW)
+				policy[ACL_PERM_VIEW] = self._acl_effective_view(_study_acl)
 
 		# Set modify permission: start with study. If the study modify policy is set to true
 		# and it is a group policy, retrieve the global policies from Sonador and check
@@ -522,6 +564,28 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 
 			# Set other attributes
 			policy.update(pick(_patient_acl, (ACL_PERM_REMOVE, ACL_PERM_ACL)))
+
+		# Ancestor-traversal flags. When this patient is an ancestor (empty-resource) level of a
+		# child study/series modify or remove request, the leaf carries the real grant and the
+		# plugin still requires the patient level to pass with the same method. Expose a separate
+		# traverse signal derived from any descendant (study/series) modify/remove grant -- and from
+		# the patient's own modify/remove, which includes the worklist exemption set above. The leaf
+		# still enforces real modify/remove, so this does not grant direct modify/remove on the patient.
+		#
+		# Emit the traverse signal ONLY when it is True. An explicit False here would survive pick()
+		# and make an otherwise-empty no-grant policy non-empty; the Sonador consumer treats a
+		# non-empty local policy as authoritative (the `if _orthanc_auth :=` walrus), so a stray
+		# False would flip a no-grant request into the local branch instead of deferring to the
+		# global policy. Absent => consumer defaults traverse to the real permission (None on an
+		# ancestor), which correctly denies traversal when no descendant grant justifies it.
+		if policy.get(ACL_PERM_MODIFY) \
+			or getattr(_series_acl, ACL_PERM_MODIFY, None) \
+			or getattr(_study_acl, ACL_PERM_MODIFY, None):
+			policy[ACL_PERM_MODIFY_TRAVERSE] = True
+		if policy.get(ACL_PERM_REMOVE) \
+			or getattr(_series_acl, ACL_PERM_REMOVE, None) \
+			or getattr(_study_acl, ACL_PERM_REMOVE, None):
+			policy[ACL_PERM_REMOVE_TRAVERSE] = True
 
 		return policy, _patient_acl, _study_acl, _series_acl
 
@@ -571,12 +635,24 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 				.first()
 
 			# Set view permissions from series. Study and patient permissions are
-			# layered on top. Only `view` propagates from a series authorization.
+			# layered on top. Only `view` propagates from a series authorization (a child
+			# comment grant implies that `view` for ancestor traversal, see _acl_effective_view).
 			if _series_acl:
-				policy[ACL_PERM_VIEW] = getattr(_series_acl, ACL_PERM_VIEW)
+				policy[ACL_PERM_VIEW] = self._acl_effective_view(_series_acl)
 
 			# Merge study and patient ACL permissions to the policy
 			policy = self._merge_acl(policy, (_study_acl, _patient_acl), permissions=permissions)
+
+			# Ancestor-traversal flags. When this study is an ancestor (empty-resource) level of a
+			# child series modify/remove request, the leaf carries the real grant; expose a separate
+			# traverse signal derived from the study/patient policy grant or a descendant series grant.
+			# The leaf still enforces real modify/remove, so this does not grant direct modify/remove
+			# on the study. Emit ONLY when True (see _fetch_patient_policy): a stray False would keep a
+			# no-grant policy non-empty and wrongly route the request into the consumer's local branch.
+			if policy.get(ACL_PERM_MODIFY) or getattr(_series_acl, ACL_PERM_MODIFY, None):
+				policy[ACL_PERM_MODIFY_TRAVERSE] = True
+			if policy.get(ACL_PERM_REMOVE) or getattr(_series_acl, ACL_PERM_REMOVE, None):
+				policy[ACL_PERM_REMOVE_TRAVERSE] = True
 
 		# Retrieve authorization grants for series queries
 		elif level == IMAGING_SERVER_RESOURCE_SERIES.lower():
@@ -614,6 +690,16 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 			if not policy.get(ACL_PERM_COMMENT_EDIT) and (getattr(_study_acl, 'modify', None) or getattr(_patient_acl, 'modify', None)):
 				policy[ACL_PERM_COMMENT_EDIT] = getattr(_study_acl, 'modify', None) or getattr(_patient_acl, 'modify', None)
 
+			# Ancestor-traversal flags. A series is the leaf of imaging modify/remove requests, so the
+			# traverse signal simply mirrors the resolved modify/remove grant. Emit ONLY when True (see
+			# _fetch_patient_policy): the leaf carries a non-empty resource and enforces the real
+			# modify/remove permission directly, so the traverse value is irrelevant on the leaf and a
+			# stray False would only serve to keep a no-grant policy non-empty.
+			if policy.get(ACL_PERM_MODIFY):
+				policy[ACL_PERM_MODIFY_TRAVERSE] = True
+			if policy.get(ACL_PERM_REMOVE):
+				policy[ACL_PERM_REMOVE_TRAVERSE] = True
+
 			logger.debug('Authorization policy for series=%s level=%s orthanc-id=%s\n%s' % (principal, level, uid, policy))
 
 		# Retrieve authorization grants for instance queries
@@ -625,8 +711,13 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 			return self._fetch_resource_policy(session, principal, IMAGING_SERVER_RESOURCE_SERIES.lower(), dcm.series,
 				patient_authmodel, study_authmodel, series_authmodel, permissions=permissions)
 
-		# Filter null values from the policy
-		return pick(policy, permissions)
+		# Filter null values from the policy. The ancestor-traversal signals are computed on the policy
+		# dict above; they are NOT ACL model columns, so they are absent from ACL_PERM_RESOURCE and would
+		# be silently dropped by a pick() over `permissions` alone. Include them explicitly so they
+		# survive serialization to the Sonador consumer -- otherwise ResourceAuthorization receives no
+		# traverse key, defaults traverse to the real permission (None on an ancestor), and denies the
+		# ancestor (empty-resource) modify/remove level, rejecting the whole hierarchy-exploded request.
+		return pick(policy, tuple(permissions) + (ACL_PERM_MODIFY_TRAVERSE, ACL_PERM_REMOVE_TRAVERSE))
 
 	def resource_policy(self, session, auth_request, permissions=ACL_PERM_RESOURCE):
 		'''	Parse the request to an ACL policy for the desired resource from user and group authorizations.
@@ -650,8 +741,19 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 			auth_request.group.ID, auth_request.level.value, auth_request.orthanc_id, GroupPatientAuth, GroupStudyAuth, GroupSeriesAuth,
 			permissions=permissions)
 
-		# Merge user and group policy
-		for _perm in permissions:
-			policy[_perm] = _user_authpolicy.get(_perm) or _group_authpolicy.get(_perm)
+		# Merge user and group policy. Include the ancestor-traversal signals (not part of
+		# ACL_PERM_RESOURCE) so a traverse granted on EITHER the user or group policy is preserved.
+		#
+		# Combine with True-precedence rather than a bare `or`: a positive grant on either side wins
+		# (additive policy), but an explicit False must survive instead of collapsing to None. This
+		# matters for the local comment override on the Sonador side, which treats None as "defer to
+		# the global policy" and False as an authoritative deny: `False or None` would wrongly turn a
+		# local comment DENY into None and let it fall through to a global comment grant. For
+		# view/modify/remove a local False is harmless (the consumer falls through to the global policy
+		# either way), so this only tightens the comment-deny case without loosening anything else.
+		_response_perms = tuple(permissions) + (ACL_PERM_MODIFY_TRAVERSE, ACL_PERM_REMOVE_TRAVERSE)
+		for _perm in _response_perms:
+			_vals = (_user_authpolicy.get(_perm), _group_authpolicy.get(_perm))
+			policy[_perm] = True if True in _vals else (False if False in _vals else None)
 
-		return pick(policy, permissions)
+		return pick(policy, _response_perms)

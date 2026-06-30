@@ -345,6 +345,11 @@ class CacheStudy(CacheAclResourceMixin, CacheResourceMixin, DbBase):
 		return CacheStudyDatetime
 
 	@classproperty
+	def comment_model(cls):
+		from .comments import ImagingStudyComment
+		return ImagingStudyComment
+
+	@classproperty
 	def group_acl_model(self):
 		from .auth import GroupStudyAuth
 		return GroupStudyAuth
