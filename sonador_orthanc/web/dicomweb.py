@@ -811,21 +811,21 @@ def init_auth_endpoints(orthanc_conf, sonador_manager, OrthancSession):
 	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'studies/(\d+(\.\d+)+)/acl/user'),
 		AuthDICOMManagementView.as_view(sonador_manager=sonador_manager,
 			sessionmaker=OrthancSession, resource_cachemodel=CacheStudy, model=UserStudyAuth,
-			modelform=UserAclValidationForm, dicom_uid_header=DCMHEADER_STUDY_INSTANCE_UID))
+			modelform=UserAclExtendedValidationForm, dicom_uid_header=DCMHEADER_STUDY_INSTANCE_UID))
 	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'studies/(\d+(\.\d+)+)/acl/user/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'),
 		AuthDICOMRestView.as_view(sonador_manager=sonador_manager,
 			sessionmaker=OrthancSession, resource_cachemodel=CacheStudy, model=UserStudyAuth,
-			modelform=UserAclValidationForm, dicom_uid_header=DCMHEADER_STUDY_INSTANCE_UID))
+			modelform=UserAclExtendedValidationForm, dicom_uid_header=DCMHEADER_STUDY_INSTANCE_UID))
 
 	# Group endpoints
 	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'studies/(\d+(\.\d+)+)/acl/group'),
 		AuthDICOMManagementView.as_view(sonador_manager=sonador_manager,
 			sessionmaker=OrthancSession, resource_cachemodel=CacheStudy, model=GroupStudyAuth,
-			modelform=GroupAclValidationForm, dicom_uid_header=DCMHEADER_STUDY_INSTANCE_UID))
+			modelform=GroupAclExtendedValidationForm, dicom_uid_header=DCMHEADER_STUDY_INSTANCE_UID))
 	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'studies/(\d+(\.\d+)+)/acl/group/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'),
 		AuthDICOMRestView.as_view(sonador_manager=sonador_manager,
 			sessionmaker=OrthancSession, resource_cachemodel=CacheStudy, model=GroupStudyAuth,
-			modelform=GroupAclValidationForm, dicom_uid_header=DCMHEADER_STUDY_INSTANCE_UID))
+			modelform=GroupAclExtendedValidationForm, dicom_uid_header=DCMHEADER_STUDY_INSTANCE_UID))
 
 	# Resource ACL/permission lookup
 	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'studies/(\d+(\.\d+)+)/resource-acl'),

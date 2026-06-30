@@ -41,20 +41,20 @@ def init_auth(orthanc_conf, sonador_manager, OrthancSession):
 	orthanc.RegisterRestCallback(r'/studies/([0-9a-fA-F]{8}\-?){5}/acl/user',
 		AuthManagementView.as_view(sonador_manager=sonador_manager,
 			sessionmaker=OrthancSession, resource_cachemodel=CacheStudy, model=UserStudyAuth,
-			modelform=UserAclValidationForm))
+			modelform=UserAclExtendedValidationForm))
 	orthanc.RegisterRestCallback(r'/studies/([0-9a-fA-F]{8}\-?){5}/acl/user/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
 		AuthRestView.as_view(sonador_manager=sonador_manager,
 			sessionmaker=OrthancSession, resource_cachemodel=CacheStudy, model=UserStudyAuth,
-			modelform=UserAclValidationForm))
+			modelform=UserAclExtendedValidationForm))
 
 	orthanc.RegisterRestCallback(r'/studies/([0-9a-fA-F]{8}\-?){5}/acl/group',
 		AuthManagementView.as_view(sonador_manager=sonador_manager,
 			sessionmaker=OrthancSession, resource_cachemodel=CacheStudy, model=GroupStudyAuth,
-			modelform=GroupAclValidationForm))
+			modelform=GroupAclExtendedValidationForm))
 	orthanc.RegisterRestCallback(r'/studies/([0-9a-fA-F]{8}\-?){5}/acl/group/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
 		AuthRestView.as_view(sonador_manager=sonador_manager,
 			sessionmaker=OrthancSession, resource_cachemodel=CacheStudy, model=GroupStudyAuth,
-			modelform=GroupAclValidationForm))
+			modelform=GroupAclExtendedValidationForm))
 
 
 	# Series ACL endpoints

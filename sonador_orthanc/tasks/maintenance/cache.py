@@ -399,10 +399,10 @@ def remove_cache_resource(sonador_manager: SonadorServerManager, sessionmaker, c
 
 			# Remove comments
 			if hasattr(cachemodel, 'comment_model'):
-				for c in session.query(cachemodel.comment_model).filter_by(**{
+				for cmt in session.query(cachemodel.comment_model).filter_by(**{
 						cachemodel.comment_model.resource_foreignkey_attr: resource
 					}):
-					session.delete(c)
+					session.delete(cmt)
 
 			# Remove access control lists: group and user models
 			for acl_model in (getattr(cachemodel, 'group_acl_model', None), getattr(cachemodel, 'user_acl_model', None)):

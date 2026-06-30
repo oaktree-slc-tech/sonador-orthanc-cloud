@@ -43,8 +43,8 @@ class AuthValidationForm(OrthancBaseModelform):
 class AuthExtendedValidationForm(AuthValidationForm):
 	'''	Validation model for validating the structure of resource grants which include comments
 	'''
-	CommentEdit: bool
-	CommentView: bool
+	CommentEdit: bool = False
+	CommentView: bool = False
 
 	db_fieldmap: ClassVar[dict] = gextend(AuthValidationForm.db_fieldmap, {
 		'CommentEdit': 'comment_edit',

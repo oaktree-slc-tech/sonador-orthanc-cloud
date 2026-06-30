@@ -120,7 +120,8 @@ class GroupPatientAuth(GroupAuthorizationPropertiesMixin, AuthorizationPermissio
 		return CachePatient
 	
 
-class UserStudyAuth(UserAuthorizationPropertiesMixin, AuthorizationPermissionMixin, DbBase):
+class UserStudyAuth(
+		CommentsPermissionMixin, UserAuthorizationPropertiesMixin, AuthorizationPermissionMixin, DbBase):
 	''' study table holding the uid's of all users with access to that study
 	'''
 	__tablename__ = 'sonador_auth_user_study'
@@ -139,7 +140,8 @@ class UserStudyAuth(UserAuthorizationPropertiesMixin, AuthorizationPermissionMix
 		return CacheStudy
 	
 
-class GroupStudyAuth(GroupAuthorizationPropertiesMixin, AuthorizationPermissionMixin, DbBase):
+class GroupStudyAuth(
+		CommentsPermissionMixin, GroupAuthorizationPropertiesMixin, AuthorizationPermissionMixin, DbBase):
 	''' study table holding the uid's of all groups with access to that study
 	'''
 	__tablename__ = 'sonador_auth_group_study'
