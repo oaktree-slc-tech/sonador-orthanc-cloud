@@ -36,6 +36,9 @@ from ..web.dicomweb import DicomResourceMixin, DicomUidJsonMixin
 
 from ..validation.worklist import WorklistItemValidationForm
 from ..validation.comments import CommentValidationForm
+from ..validation.procedure import ProcedureValidationForm
+
+from .history import strip_reserved_keys, extract_reserved_keys, build_history_entry
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +98,85 @@ class StudyReviewerWorklistJsonMixin:
 		return get_study_worklist_kafka_data(self.sonador_manager, sid, wid)
 
 
-class StudyReviewerWorklistItemManagementView(StudyReviewerWorklistJsonMixin, KafkaMixin, 
+class WorklistProcedureHistoryMixin:
+	'''	Mixin which adds structured Requested/Performed Procedure capture and per-transition
+		review history to the worklist management/REST views (orthanc-sonador#54).
+
+		Procedures and history live in the item's `orthanc` JSONB under the server-owned reserved
+		keys `RequestedProcedure`, `PerformedProcedure`, and `ReviewHistory`. Inbound `Meta` is
+		stripped of these keys (FR-7); the authoritative values are re-applied server-side.
+	'''
+	procedure_modelform = ProcedureValidationForm
+
+	def strip_inbound_reserved_meta(self):
+		'''	Remove server-owned reserved keys from any client-provided `Meta` (FR-7). Procedure
+			writes are only accepted through the validated `Procedure` block.
+		'''
+		meta = self.POST.get('Meta')
+		if isinstance(meta, dict):
+			self.POST['Meta'] = strip_reserved_keys(meta)
+
+	def validate_procedure_block(self, session):
+		'''	Validate the optional `Procedure` block and cache the normalized result.
+		'''
+		self.procedure_data = None
+		if self.POST.get('Procedure'):
+			self.procedure_data = self.procedure_modelform.clean(self.POST.get('Procedure'))
+
+	def apply_reserved_keys(self, session, obj, previous_state, previous_reserved, comment_uid=None):
+		'''	Rebuild the server-owned reserved keys on `obj.orthanc`: carry forward existing
+			procedures/history, apply any new procedure writes, and append a `ReviewHistory` entry
+			for this create/transition (FR-4/FR-5). Commits the item.
+
+			@input previous_state (str|None): item state before this operation (None on create)
+			@input previous_reserved (dict): reserved keys captured before the form was applied
+			@input comment_uid (str|None): UID of a note linked to this transition
+		'''
+		# Ensure request user context (needed for procedure/history attribution)
+		if not getattr(self, 'user', None):
+			self.init_user_context(self.request)
+
+		# Start from the client-controlled Meta with any forged reserved keys removed
+		orthanc = strip_reserved_keys(obj.orthanc)
+
+		# Carry forward previously stored server-owned procedures/history
+		requested = previous_reserved.get('RequestedProcedure')
+		performed = previous_reserved.get('PerformedProcedure')
+		history = list(previous_reserved.get('ReviewHistory') or [])
+
+		# Apply new procedure writes from the validated Procedure block
+		procedure = getattr(self, 'procedure_data', None) or {}
+		if procedure.get('RequestedProcedure'):
+			requested = {
+				**procedure['RequestedProcedure'],
+				'RequestedBy': self.user.pk,
+				'RequestedDateTime': build_history_entry(None, obj.state, self.user.pk)['Timestamp'],
+			}
+		if procedure.get('PerformedProcedure'):
+			performed = {
+				**procedure['PerformedProcedure'],
+				'PerformedBy': self.user.pk,
+			}
+
+		# Append a ReviewHistory entry on creation, on any state change, or when a note is linked
+		if previous_state != obj.state or comment_uid is not None:
+			history.append(build_history_entry(previous_state, obj.state, self.user.pk, comment_uid))
+
+		# Write reserved keys back into the blob
+		if requested is not None:
+			orthanc['RequestedProcedure'] = requested
+		if performed is not None:
+			orthanc['PerformedProcedure'] = performed
+		orthanc['ReviewHistory'] = history
+
+		obj.orthanc = orthanc
+		session.add(obj)
+		session.commit()
+
+		return obj
+
+
+class StudyReviewerWorklistItemManagementView(WorklistProcedureHistoryMixin, StudyReviewerWorklistJsonMixin, KafkaMixin,
 		AdminUserLookupMixin, AdminGroupLookupMixin, UserContextMixin, ResourceChildManagementBaseView):
 	'''	Management endpoint which can be used to work with study reviewer worklist items
 	'''
@@ -170,21 +251,38 @@ class StudyReviewerWorklistItemManagementView(StudyReviewerWorklistJsonMixin, Ka
 
 		return form_kwargs
 
+	def validate_form_data(self, session, *args, **kwargs):
+		'''	Protect reserved `Meta` keys and validate the optional `Procedure` block (#54)
+		'''
+		# Strip server-owned reserved keys from inbound Meta (FR-7)
+		self.strip_inbound_reserved_meta()
+
+		# Validate worklist form
+		_form = super().validate_form_data(session, *args, **kwargs)
+
+		# Validate the optional Procedure block (normally only RequestedProcedure on create)
+		self.validate_procedure_block(session)
+
+		return _form
+
 	def save_object_data(self, session, form_instance, *args, **kwargs):
-     
+
 		# Save worklist to db
 		obj = super().save_object_data(session, form_instance, *args, **kwargs)
-		
+
+		# Apply server-owned procedures and seed the review history for the new item (FR-5)
+		self.apply_reserved_keys(session, obj, previous_state=None, previous_reserved={})
+
 		# Get Kafka data to publish to a topic
 		if self.kafka_topic:
-			
+
 			# Publish worklist data to Kafka
 			self.send_kafka_msg(session, obj.study.uid, obj.uid)
-			
+
 		return obj
 
 
-class StudyReviewerWorklistItemRestView(StudyReviewerWorklistJsonMixin, KafkaMixin, 
+class StudyReviewerWorklistItemRestView(WorklistProcedureHistoryMixin, StudyReviewerWorklistJsonMixin, KafkaMixin,
 		AdminUserLookupMixin, AdminGroupLookupMixin, UserContextMixin, ResourceChildBaseRestView):
 	'''	REST endpoint which can be used to retrieve details for, update, and delete study reviewer worklist items
 	'''
@@ -248,9 +346,12 @@ class StudyReviewerWorklistItemRestView(StudyReviewerWorklistJsonMixin, KafkaMix
 		return form_kwargs
 
 	def validate_form_data(self, session, obj, *args, **kwargs):
+		# Strip server-owned reserved keys from inbound Meta (FR-7)
+		self.strip_inbound_reserved_meta()
+
 		# Validate worklist form
 		_form = super().validate_form_data(session, obj, *args, **kwargs)
-  
+
 		# If comment in request, validate comment form
 		if self.POST.get('Comment'):
 			self.comment_form_instance = self.comment_modelform.clean(**{
@@ -262,7 +363,10 @@ class StudyReviewerWorklistItemRestView(StudyReviewerWorklistJsonMixin, KafkaMix
 				'request_user': self.user,
 				'update': False
 			})
-			
+
+		# Validate the optional Procedure block (typically PerformedProcedure on update)
+		self.validate_procedure_block(session)
+
 		return _form
 
 	def init_comment_model(self, session, ruid=None, **kwargs):
@@ -287,14 +391,22 @@ class StudyReviewerWorklistItemRestView(StudyReviewerWorklistJsonMixin, KafkaMix
 		return get_study_comment_kafka_data(self.sonador_manager, sid, cid)
 
 	def save_object_data(self, session, obj, form_instance):
+		# Capture pre-update state and reserved keys before the form overwrites orthanc
+		previous_state = obj.state
+		previous_reserved = extract_reserved_keys(obj.orthanc)
+
 		# Save worklist to db
 		obj = super().save_object_data(session, obj, form_instance)
-  
-		# If comment in request, save comment to db
+
+		# If comment in request, save comment to db first so its UID can link into the history
 		if self.POST.get('Comment') and getattr(self, 'comment_form_instance', None):
 			cobj = self.comment_form_instance.save(session, self.init_comment_model(session))
 		else: cobj = None
-		
+
+		# Re-apply server-owned procedures and append a per-transition ReviewHistory entry (FR-4/5/7)
+		self.apply_reserved_keys(session, obj, previous_state, previous_reserved,
+			comment_uid=(cobj.uid if cobj else None))
+
 		# Get Kafka data to publish to a topic
 		if self.kafka_topic:
 
@@ -307,7 +419,7 @@ class StudyReviewerWorklistItemRestView(StudyReviewerWorklistJsonMixin, KafkaMix
 				# Retrieve comment Kafka data
 				cdata = self.fetch_comment_kafka_data(session, obj.study.uid, cobj.uid)
 				self.sonador_manager.kafka_producer.send_msg(json.dumps(cdata, cls=self.json_cls), topic=self.kafka_topic)
-			
+
 		return obj
 
 
