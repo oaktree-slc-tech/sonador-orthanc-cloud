@@ -22,7 +22,8 @@ class OrthancViewValidationMixin:
 		'''	Convert the provided 
 		'''
 		if err.get('loc'):
-			err['field'] = '.'.join(err['loc'])
+			# loc entries may be ints (list indices, e.g. Sequence item validation); stringify
+			err['field'] = '.'.join(str(_l) for _l in err['loc'])
 		if err.get('type'):
 			err[gapi.CODE] = err['type']
 		if err.get('msg'):
@@ -42,7 +43,7 @@ class OrthancViewValidationMixin:
 
 		# Convert error to field list and message
 		for _e in err.errors():
-			_field = '.'.join(_e.get('loc', tuple()))
+			_field = '.'.join(str(_l) for _l in _e.get('loc', tuple()))
 			_msg = self.err2msg(_e)
 
 			if server_errors.get(_field):

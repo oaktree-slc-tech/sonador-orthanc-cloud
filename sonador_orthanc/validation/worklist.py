@@ -124,7 +124,10 @@ class WorklistItemValidationForm(SonadorGroupValidationMixin, SonadorUserValidat
 			or isinstance(kwargs.get('Complete'), str):
 			kwargs['Complete'] = datetime.datetime.now()
 			kwargs['State'] = SONADOR_WORKLIST_STATUS_COMPLETED
-		
+
+		# Requested/target state for this operation
+		state = kwargs.get('State')
+
 		# Prevent changing state away from completed/cancelled once set
 		if _update and obj.state in [SONADOR_WORKLIST_STATUS_COMPLETED, SONADOR_WORKLIST_STATUS_CANCELLED]:
 			if state != obj.state:
@@ -135,10 +138,9 @@ class WorklistItemValidationForm(SonadorGroupValidationMixin, SonadorUserValidat
 						loc=('State',), input={ 'State': state },
 						msg=emsg),
 				])
-				raise err 
-		
+				raise err
+
 		# Automatically populate complete field when state becomes completed or cancelled
-		state = kwargs.get('State')
 		if state in [SONADOR_WORKLIST_STATUS_COMPLETED, SONADOR_WORKLIST_STATUS_CANCELLED]:
 			
 			# If transitioning to completed/cancelled state, set complete timestamp

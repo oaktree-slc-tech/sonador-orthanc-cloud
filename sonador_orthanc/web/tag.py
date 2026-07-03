@@ -1,6 +1,7 @@
-''' Web views which provide an API compatible with the Unified Procedure Step DICOM specification.
-	UPS facilitates the retrieval of scheduled procedures via worklist queries and allows for
-	modalities to report when a worklist item as been fulfilled.
+''' Web views which provide an API for managing imaging tags (coded concepts).
+
+	Tags model the DICOM Code Sequence Macro (Code Value, Coding Scheme Designator,
+	Coding Scheme Version, Code Meaning) and are scoped to a Sonador group.
 '''
 import json, uuid
 
