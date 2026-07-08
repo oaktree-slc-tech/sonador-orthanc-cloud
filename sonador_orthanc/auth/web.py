@@ -61,10 +61,14 @@ logger = logging.getLogger(__name__)
 # to the ancestor levels.  They are consumed ONLY by the empty-resource (ancestor)
 # branch of ResourceAuthorization.resource_perm; the leaf still enforces the real
 # `modify`/`remove` permission, so this does NOT grant a descendant-only user the
-# ability to modify/remove the ancestor directly (no privilege escalation).  Worklist
-# creation (POST /studies/<id>/worklists) relies on the same mechanism: its patient
-# ancestor is granted via the worklist exemption, which sets `modify` and therefore
-# `modify_traverse` below.
+# ability to modify/remove the ancestor directly (no privilege escalation).
+#
+# Worklist requests (POST/PUT /studies/<id>/worklists/<wid>) do NOT use this mechanism:
+# the plugin's route parser tags the patient ancestor with action="worklist" (see
+# orthanc-authorization's ClassifyAction), which ResourceAuthorization.resource_perm
+# resolves via a dedicated `view`-only ancestor branch -- no modify/modify_traverse
+# involved. See _fetch_patient_policy for the (now-retired) history of a modify-based
+# workaround here.
 ACL_PERM_MODIFY_TRAVERSE = 'modify_traverse'
 ACL_PERM_REMOVE_TRAVERSE = 'remove_traverse'
 
@@ -487,13 +491,13 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 		'''	Parse the request to an ACL policy for the desired patient.
 
 			*	`view` permission on a study grants limited `view` permissions on the patient.
-			* 	A `modify` permission on a child study group policy in combination with a `worklist` permission on the same group grants
-				a `modify` permission for the patient. This workaround is needed since the authorization plugin
-				checks patient and study permissions for worklist requests and will deny the request if there is not a `modify`, 
-				permission for the patient. IMPORTANT: the group on the study and the group on the worklist policy must match.
-				-	TODO: Add URI to the request made by the authorization plugin so it is possible to understand which resource
-					is being requested and ONLY provide the `modify` permission for worklist requests.
 
+			Worklist requests no longer need special-casing here: the patient-ancestor call of a
+			worklist request is tagged action="worklist" by the plugin's route parser and resolved
+			via a dedicated `view`-only branch in ResourceAuthorization.resource_perm, so ordinary
+			`view` propagation (below) is already sufficient. (Previously this method also granted
+			a `modify` permission for the patient as a workaround for that same ancestor check --
+			retired now that the plugin/resource_perm handle it directly without requiring `modify`.)
 		'''
 		policy = policy or {}
 		_patient_acl = _study_acl = _series_acl = None
@@ -529,28 +533,6 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 			if not policy.get(ACL_PERM_VIEW):
 				policy[ACL_PERM_VIEW] = self._acl_effective_view(_study_acl)
 
-		# Set modify permission: start with study. If the study modify policy is set to true
-		# and it is a group policy, retrieve the global policies from Sonador and check
-		# for a worklist permission. If the group UIDs match, set the modify policy to true.
-		# IMPORTANT: required in order to allow limited users to modify worklist items.
-		if _study_acl and isinstance(_study_acl, GroupStudyAuth):
-
-			# Check worklist exemption for modify policy. Fetch global server policies and inspect
-			# worklist permission. If a worklist permission is available for the same group, change the
-			# policy `modify` to True.
-			if not policy.get(ACL_PERM_MODIFY) and _study_acl.modify:
-				_global_acl = self.sonador_manager.get_internal_imageserver().fetch_acl().get_group_acl(_study_acl.group)
-				
-				# Worklist exception criteria: global ACL policy present which matches local study policy group,
-				# the local study policy must defined a `modify` permission, AND the global policy must have a worklist permission.
-				if _global_acl and _study_acl.group == _global_acl.group and getattr(_global_acl, 'worklist'):
-
-					logger.warning(('Override modify for patient based on worklist policy: principal=%s level=%s ' 
-							+' resource-uid=%s study-policy=%s study-policy-modify=%s global-policy=%s global-policy-worklist=%s acl-patient-modify=%s') % (
-						principal, level, uid, _study_acl.uid, _study_acl.modify, _global_acl.pk, getattr(_global_acl, 'worklist', None), True
-					))
-					policy[ACL_PERM_MODIFY] = True
-
 		# Set patient attributes from patient ACL
 		if _patient_acl:
 
@@ -569,8 +551,9 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 		# child study/series modify or remove request, the leaf carries the real grant and the
 		# plugin still requires the patient level to pass with the same method. Expose a separate
 		# traverse signal derived from any descendant (study/series) modify/remove grant -- and from
-		# the patient's own modify/remove, which includes the worklist exemption set above. The leaf
-		# still enforces real modify/remove, so this does not grant direct modify/remove on the patient.
+		# the patient's own modify/remove. The leaf still enforces real modify/remove, so this does
+		# not grant direct modify/remove on the patient. (Worklist requests never reach this branch:
+		# they resolve via the action="worklist" view-only check in resource_perm instead.)
 		#
 		# Emit the traverse signal ONLY when it is True. An explicit False here would survive pick()
 		# and make an otherwise-empty no-grant policy non-empty; the Sonador consumer treats a
