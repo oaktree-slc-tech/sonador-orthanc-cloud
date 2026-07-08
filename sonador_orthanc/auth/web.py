@@ -72,6 +72,14 @@ logger = logging.getLogger(__name__)
 ACL_PERM_MODIFY_TRAVERSE = 'modify_traverse'
 ACL_PERM_REMOVE_TRAVERSE = 'remove_traverse'
 
+# ACL policy-management ancestor-traversal signal (sonador#73). The plugin's route parser
+# tags the INTERNAL ACL-management route's exploded patient -> study -> series hierarchy
+# with action="acl" (mirroring action="comment"/"worklist"), so the ancestor levels of
+# that request resolve via ResourceAuthorization.resource_perm's acl branch, consulting
+# this traverse signal instead of the ancestor's own `acl` (which does not propagate
+# upward -- a series-only grant must still authorize traversing its parent study/patient).
+ACL_PERM_ACL_TRAVERSE = 'acl_traverse'
+
 
 # Resource ACL Policy API Endpoints
 
@@ -570,6 +578,15 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 			or getattr(_study_acl, ACL_PERM_REMOVE, None):
 			policy[ACL_PERM_REMOVE_TRAVERSE] = True
 
+			# acl_traverse: same rule, for the ACL policy-management route (see the module-level
+			# ACL_PERM_ACL_TRAVERSE docblock). `acl` propagates downward only (a child grant does
+			# not cascade to its parent), so this signal -- not the patient's own `acl` -- is what
+			# lets the ancestor pass when a descendant study/series carries the real grant.
+			if policy.get(ACL_PERM_ACL) \
+				or getattr(_series_acl, ACL_PERM_ACL, None) \
+				or getattr(_study_acl, ACL_PERM_ACL, None):
+				policy[ACL_PERM_ACL_TRAVERSE] = True
+
 		return policy, _patient_acl, _study_acl, _series_acl
 
 	def _fetch_resource_policy(self, session, principal, level, uid, patient_authmodel, study_authmodel, series_authmodel,
@@ -636,6 +653,8 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 				policy[ACL_PERM_MODIFY_TRAVERSE] = True
 			if policy.get(ACL_PERM_REMOVE) or getattr(_series_acl, ACL_PERM_REMOVE, None):
 				policy[ACL_PERM_REMOVE_TRAVERSE] = True
+			if policy.get(ACL_PERM_ACL) or getattr(_series_acl, ACL_PERM_ACL, None):
+				policy[ACL_PERM_ACL_TRAVERSE] = True
 
 		# Retrieve authorization grants for series queries
 		elif level == IMAGING_SERVER_RESOURCE_SERIES.lower():
@@ -682,6 +701,8 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 				policy[ACL_PERM_MODIFY_TRAVERSE] = True
 			if policy.get(ACL_PERM_REMOVE):
 				policy[ACL_PERM_REMOVE_TRAVERSE] = True
+			if policy.get(ACL_PERM_ACL):
+				policy[ACL_PERM_ACL_TRAVERSE] = True
 
 			logger.debug('Authorization policy for series=%s level=%s orthanc-id=%s\n%s' % (principal, level, uid, policy))
 
@@ -700,7 +721,7 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 		# survive serialization to the Sonador consumer -- otherwise ResourceAuthorization receives no
 		# traverse key, defaults traverse to the real permission (None on an ancestor), and denies the
 		# ancestor (empty-resource) modify/remove level, rejecting the whole hierarchy-exploded request.
-		return pick(policy, tuple(permissions) + (ACL_PERM_MODIFY_TRAVERSE, ACL_PERM_REMOVE_TRAVERSE))
+		return pick(policy, tuple(permissions) + (ACL_PERM_MODIFY_TRAVERSE, ACL_PERM_REMOVE_TRAVERSE, ACL_PERM_ACL_TRAVERSE))
 
 	def resource_policy(self, session, auth_request, permissions=ACL_PERM_RESOURCE):
 		'''	Parse the request to an ACL policy for the desired resource from user and group authorizations.
@@ -734,7 +755,7 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 		# local comment DENY into None and let it fall through to a global comment grant. For
 		# view/modify/remove a local False is harmless (the consumer falls through to the global policy
 		# either way), so this only tightens the comment-deny case without loosening anything else.
-		_response_perms = tuple(permissions) + (ACL_PERM_MODIFY_TRAVERSE, ACL_PERM_REMOVE_TRAVERSE)
+		_response_perms = tuple(permissions) + (ACL_PERM_MODIFY_TRAVERSE, ACL_PERM_REMOVE_TRAVERSE, ACL_PERM_ACL_TRAVERSE)
 		for _perm in _response_perms:
 			_vals = (_user_authpolicy.get(_perm), _group_authpolicy.get(_perm))
 			policy[_perm] = True if True in _vals else (False if False in _vals else None)
