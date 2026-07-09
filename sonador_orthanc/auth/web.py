@@ -578,14 +578,14 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 			or getattr(_study_acl, ACL_PERM_REMOVE, None):
 			policy[ACL_PERM_REMOVE_TRAVERSE] = True
 
-			# acl_traverse: same rule, for the ACL policy-management route (see the module-level
-			# ACL_PERM_ACL_TRAVERSE docblock). `acl` propagates downward only (a child grant does
-			# not cascade to its parent), so this signal -- not the patient's own `acl` -- is what
-			# lets the ancestor pass when a descendant study/series carries the real grant.
-			if policy.get(ACL_PERM_ACL) \
-				or getattr(_series_acl, ACL_PERM_ACL, None) \
-				or getattr(_study_acl, ACL_PERM_ACL, None):
-				policy[ACL_PERM_ACL_TRAVERSE] = True
+		# acl_traverse: same rule, for the ACL policy-management route (see the module-level
+		# ACL_PERM_ACL_TRAVERSE docblock). `acl` propagates downward only (a child grant does
+		# not cascade to its parent), so this signal -- not the patient's own `acl` -- is what
+		# lets the ancestor pass when a descendant study/series carries the real grant.
+		if policy.get(ACL_PERM_ACL) \
+			or getattr(_series_acl, ACL_PERM_ACL, None) \
+			or getattr(_study_acl, ACL_PERM_ACL, None):
+			policy[ACL_PERM_ACL_TRAVERSE] = True
 
 		return policy, _patient_acl, _study_acl, _series_acl
 
