@@ -476,9 +476,14 @@ class StudyReviewerWorklistItemDICOMListView(AdminUserLookupMixin, AdminGroupLoo
 				if _groupfilter is None: _groupfilter = w.group == _gid
 				else: _groupfilter |= w.group == _gid
 
-		# Apply user's group membership filter
+		# Apply user's group membership filter directly against the joined worklist-item
+		# row (`w`), not via `cs.worklist_reviewer.any(...)` -- that traverses the study's
+		# full worklist_reviewer relationship and generates a correlated EXISTS ("does this
+		# study have *some* item matching my group?"), which passes for the whole study
+		# once any of its items belongs to one of the user's groups, leaking every other
+		# group's worklist items for that study through the outer join.
 		if _groupfilter is not None:
-			dcm_resources = dcm_resources.filter(cs.worklist_reviewer.any(_groupfilter))
+			dcm_resources = dcm_resources.filter(_groupfilter)
 
 		# If the user is not a member of any groups, return an empty queryset
 		else: dcm_resources = dcm_resources.none()

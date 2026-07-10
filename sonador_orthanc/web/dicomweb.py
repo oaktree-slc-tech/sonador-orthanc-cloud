@@ -762,28 +762,6 @@ def init_worklist_endpints(orthanc_conf, sonador_manager, OrthancSession):
 			cache_dicomtags=orthanc_maindicom_tags(orthanc_conf), dcm_privatetags=dcm_privatetags))
 	
 
-def init_tag_endpoints(orthanc_conf, sonador_manager, OrthancSession):
-	'''	Initialize DICOMweb extension endpoints
-	'''
-	dicomweb_conf = orthanc_conf.get(ORTHANC_CONFIG_SECTION_DICOMWEB, {})
-
-	dicomweb_plugin_root = dicomweb_conf.get('Root')
-	dicomweb_root = dicomweb_conf.get('SonadorDicomWebRoot') or dicomweb_plugin_root
-	if not dicomweb_root:
-		raise ConfigurationError('Unable to initialize DICOmweb extension endpoints, invalid DICOmweb configuration. '
-			+ 'No DICOMweb root defined in configuration.')
-
-	orthanc.LogWarning('Enabling DICOMweb tag endpoints')
-
-	from ..web.tag import SeriesTagItemDICOMManagementView, SeriesTagItemDICOMRestView
-	
-	# Reviewer Worklist Item endpoints
-	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'series/(\d+(\.\d+)+)/tag'),
-		SeriesTagItemDICOMManagementView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
-	orthanc.RegisterRestCallback(posixpath.join(dicomweb_root, r'series/(\d+(\.\d+)+)/tag/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'),
-		SeriesTagItemDICOMRestView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
-	
-
 def init_auth_endpoints(orthanc_conf, sonador_manager, OrthancSession):
 	'''	Initialize DICOMweb ACL REST endpoints
 	'''
