@@ -381,6 +381,14 @@ def remove_cache_resource(sonador_manager: SonadorServerManager, sessionmaker, c
 		
 			# Query cache model instance from the database and attempt to remove
 			c = session.query(cachemodel).filter_by(uid=resource).first()
+
+			# Capture parent linkage BEFORE deletion. After session.delete()/commit the instance
+			# is expired, so `c.parent_id` would no longer be reliably readable when the parent
+			# cleanup below runs.
+			_child_model = type(c) if c else None
+			_parent_id = getattr(c, 'parent_id', None) if c else None
+			_parent_model = getattr(c, 'parent_resource_model', None) if c else None
+
 			if c: session.delete(c)
 			else:
 
@@ -421,13 +429,21 @@ def remove_cache_resource(sonador_manager: SonadorServerManager, sessionmaker, c
 				session.commit()
 				session.flush()
 
-			# Check parent resources after deletion and remove study/series without any siblings.
+			# Check parent resources after deletion and remove study/patient without any children.
 			# This fixes a bug in the Sonador Resource Cache where studies and patients without any children
-			# become orphaned.
-			if check_parents and c and isinstance(c, (CacheStudy, CacheSeries)) and getattr(c, 'parent_id', None):
+			# become orphaned -- along with any ACL rows attached to them (removed above via this same
+			# function when the parent is deleted). An orphaned parent ACL row keyed by its DICOM/Orthanc
+			# UID silently re-attaches when a resource with the same UID is later re-uploaded, incorrectly
+			# shadowing subsequent authorization decisions for that resource.
+			#
+			# The sibling count MUST filter on the child model's parent_id COLUMN equal to the captured
+			# parent id value. The previous `filter(c.parent_id == c.parent_id)` compared a Python value
+			# to itself -- always True -- so `.filter(True)` counted EVERY row in the table and the
+			# `== 0` guard never held, leaving the parent (and its ACL rows) permanently orphaned.
+			if check_parents and c and isinstance(c, (CacheStudy, CacheSeries)) and _parent_id:
 
-				if session.query(type(c)).filter(c.parent_id == c.parent_id).count() == 0:
-					remove_cache_resource(sonador_manager, sessionmaker, c.parent_resource_model, c.parent_id,
+				if session.query(_child_model).filter(_child_model.parent_id == _parent_id).count() == 0:
+					remove_cache_resource(sonador_manager, sessionmaker, _parent_model, _parent_id,
 						check_parents=check_parents, log_previously_deleted=False)
 
 		except Exception as err:
