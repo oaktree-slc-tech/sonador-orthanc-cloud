@@ -17,7 +17,6 @@ from ..web.ext import ObjectManagementView, ObjectRestView
 from ..web.ext.group import GroupChildManagementBaseView, GroupChildBaseRestView
 from ..web.helpers import paginate_query_results
 from ..web.secure_user import UserContextMixin, GroupLookupMixin
-from ..web.dicomweb import DicomResourceMixin, DicomUidJsonMixin
 
 from ..db.tag import ImagingTag
 from ..db.helpers import orthanc_tagjson
