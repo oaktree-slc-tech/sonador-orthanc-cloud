@@ -11,10 +11,12 @@ ARG AUTH_COMMIT_SHA
 #  - libboost-all-dev: covers all Boost components the framework links
 #  - libcurl4-openssl-dev + libssl-dev: required because ENABLE_WEB_CLIENT is ON
 #  - zlib1g-dev / uuid-dev: framework core dependencies
+#  - googletest / libgtest-dev: system Google Test (see USE_SYSTEM_GOOGLE_TEST below)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git mercurial build-essential cmake curl unzip tar ca-certificates \
     libjsoncpp-dev libpugixml-dev libboost-all-dev \
     libcurl4-openssl-dev libssl-dev zlib1g-dev uuid-dev \
+    googletest libgtest-dev \
   && mkdir -p /tmp/orthanc
 
 # Create and install plugin, cleanup
@@ -24,7 +26,7 @@ RUN cd /tmp/orthanc \
   && git clone https://code.oak-tree.tech/oak-tree/medical-imaging/orthanc-authorization.git auth && cd auth \
   && git checkout $AUTH_COMMIT_SHA \
   && mkdir -p /tmp/orthanc/build && cd /tmp/orthanc/build \
-  && cmake -DCMAKE_BUILD_TYPE=Release -DALLOW_DOWNLOADS=ON -DUSE_SYSTEM_GOOGLE_TEST=OFF -DUSE_SYSTEM_ORTHANC_SDK=OFF /tmp/orthanc/auth/ \
+  && cmake -DCMAKE_BUILD_TYPE=Release -DALLOW_DOWNLOADS=ON -DUSE_SYSTEM_GOOGLE_TEST=ON -DUSE_SYSTEM_ORTHANC_SDK=OFF /tmp/orthanc/auth/ \
   && make -j$(nproc) OrthancAuthorization \
   && cp libOrthancAuthorization.* /usr/share/orthanc/plugins/
 
