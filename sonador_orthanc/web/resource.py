@@ -106,14 +106,20 @@ class SonadorResourceBaseView(SonadorResourceMixin, OrthancBaseView):
 
 		except ResourceDoesNotExist as err:
 			response.update({
-				gcapicodes.ERROR: emsg_404 % self.get_resource_uid(*args, **kwargs) or '(none)',
-				gcapicodes.STATUS: gcapicodes.FAIL		
+				# Parenthesized so the fallback applies to the UID rather than to the
+				# formatted message: "%" binds tighter than "or".
+				gcapicodes.ERROR: emsg_404 % (self.get_resource_uid(*args, **kwargs) or '(none)'),
+				gcapicodes.STATUS: gcapicodes.FAIL
 			})
 			return self.http404_resource_not_found(response=response)
 
 		except Exception as err:
 			response.update({
-				gcapicodes.ERROR: emsg_404 % (self.get_resource_uid(*args, **kwargs) or '(none)', err),
+				# emsg_500, not emsg_404: the callers supply a two-placeholder 500 template
+				# and emsg_404 carries a single placeholder, so formatting it with the
+				# (uid, error) pair raised TypeError from inside the handler instead of
+				# returning the intended 500 JSON body.
+				gcapicodes.ERROR: emsg_500 % (self.get_resource_uid(*args, **kwargs) or '(none)', err),
 				gcapicodes.STATUS: gcapicodes.FAIL,
 			})
 			logger.error('Unable to execute operation for resource=%s due to an error. Error="%s"\nTraceback: %s'
