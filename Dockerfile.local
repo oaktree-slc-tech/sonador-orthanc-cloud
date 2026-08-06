@@ -54,8 +54,20 @@ RUN apt-get update && apt-get install -y git build-essential python3-requests li
 # issue #44; GCC 15 support landed in Conan 2.16). Install a GCC-15-aware Conan and the
 # other build backends, then build with isolation disabled so OUR Conan/pybind11 are used
 # instead of the (too-old) pinned ones. pybind11 is bumped to a Python-3.14-aware release.
-RUN pip3 install --break-system-packages "conan>=2.16,<3" scikit-build-core "pybind11>=2.13" ninja cmake setuptools-scm \
-  && pip3 install --break-system-packages --no-build-isolation "pillow-jpls==1.3.2"
+#
+# The toolchain is installed into a throwaway prefix (--target) instead of the system
+# site-packages, and only the resulting wheel is installed system-wide. Installing the
+# toolchain system-wide now fails: setuptools-scm 10 pulls in vcs-versioning, which wants
+# a newer "packaging" than the 26.0 that Ubuntu 26.04 ships as the apt package
+# python3-packaging, and pip 25 refuses to replace an apt-managed distribution
+# ("error: uninstall-no-record-file / Cannot uninstall packaging 26.0 ... no RECORD file
+# was found"). Staging into a prefix also keeps conan/cmake/ninja out of the final image.
+RUN pip3 install --break-system-packages --ignore-installed --target /tmp/jpls-build \
+      "conan>=2.16,<3" scikit-build-core "pybind11>=2.13" ninja cmake setuptools-scm \
+  && PATH=/tmp/jpls-build/bin:$PATH PYTHONPATH=/tmp/jpls-build \
+     pip3 wheel --no-build-isolation --no-deps --wheel-dir /tmp/jpls-wheel "pillow-jpls==1.3.2" \
+  && pip3 install --break-system-packages /tmp/jpls-wheel/pillow_jpls-*.whl \
+  && rm -rf /tmp/jpls-build /tmp/jpls-wheel /root/.conan2 /root/.cache/pip
 
 # Install Sonador Python Plugin
 RUN mkdir -p /opt/orthanc/ \
