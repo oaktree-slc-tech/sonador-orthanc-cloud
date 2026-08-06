@@ -203,6 +203,7 @@ def orthanc_cache_onstart(changeType, level, resource):
 		sonador_dicomweb.init_distortionfilter_endpoints(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
 		sonador_dicomweb.init_worklist_endpints(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
 		sonador_dicomweb.init_download_endpoints(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
+		sonador_dicomweb.init_manage_endpoints(CONF, ORTHANC_SONADOR_MANAGER, OrthancSession)
 
 
 	# Comments

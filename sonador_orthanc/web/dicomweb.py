@@ -653,6 +653,33 @@ def init_download_endpoints(orthanc_conf, sonador_manager, OrthancSession):
 		SeriesDICOMDownloadView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
 
 
+def init_manage_endpoints(orthanc_conf, sonador_manager, OrthancSession):
+	'''	Initialize DICOMweb resource management endpoints. "manage" is a generic management
+		namespace: this registration delivers removal (DELETE), and later management
+		operations extend the same views rather than needing a new route.
+	'''
+	from .manage import StudyDICOMManageView, SeriesDICOMManageView
+
+	dicomweb_conf = orthanc_conf.get(ORTHANC_CONFIG_SECTION_DICOMWEB, {})
+
+	dicomweb_plugin_root = dicomweb_conf.get('Root')
+	dicomweb_root = dicomweb_conf.get('SonadorDicomWebRoot') or dicomweb_plugin_root
+	if not dicomweb_root:
+		raise ConfigurationError('Unable to initialize DICOMweb management endpoints, invalid DICOMweb configuration. '
+			+ 'No DICOMweb root defined in configuration.')
+
+	# Initialize DICOMweb resource management endpoints
+	manage_study_dicomweb_url = posixpath.join(dicomweb_root, r'studies/(\d+(\.\d+)+)/manage')
+	orthanc.LogWarning('Enabling DICOMweb extension: study management %s' % manage_study_dicomweb_url)
+	orthanc.RegisterRestCallback(manage_study_dicomweb_url,
+		StudyDICOMManageView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
+
+	manage_series_dicomweb_url = posixpath.join(dicomweb_root, r'series/(\d+(\.\d+)+)/manage')
+	orthanc.LogWarning('Enabling DICOMweb extension: series management %s' % manage_series_dicomweb_url)
+	orthanc.RegisterRestCallback(manage_series_dicomweb_url,
+		SeriesDICOMManageView.as_view(sonador_manager=sonador_manager, sessionmaker=OrthancSession))
+
+
 def init_ext_endpoints(orthanc_conf, sonador_manager, OrthancSession):
 	'''	Initialize DICOMweb extension endpoints
 	'''
