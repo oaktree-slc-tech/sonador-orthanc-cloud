@@ -1,0 +1,7 @@
+# Development / test-only dependencies.
+#
+# The unit tests deliberately do NOT require the plugin's runtime dependencies. They exercise
+# `sonador_orthanc.kafka.helpers`, which deals only in dicts, strings and files; the Orthanc SDK
+# and the Sonador imaging stack are stubbed by `tests/conftest.py`. Keeping this list to pytest is
+# what lets the suite run in a plain Python image rather than the Orthanc container.
+pytest>=7.0

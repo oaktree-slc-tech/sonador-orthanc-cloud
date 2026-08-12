@@ -6,9 +6,7 @@ from sonador.apisettings import DicomDatetimePairKey, \
 	IMAGING_SERVER_RESOURCE_SUPPORTED, DCMHEADER_SERIES_INSTANCE_UID, DCMHEADER_STUDY_ID, DCMHEADER_PATIENT_ID, IMAGING_SERVER_UID_REGEX
 from sonador.serialization import SonadorJsonEncoder
 
-from ..apisettings import KAFKA_TIMEOUT_DEFAULT, ORTHANC_CONFIG_SECTION_SONADOR, SONADOR_CONF_KAFKA, \
-	SONADOR_CONF_KAFKA_SERVERS, SONADOR_CONF_KAFKA_TOPIC, SONADOR_KAFKA_BOOTSTRAP, \
-	ORTHANC_SERVER_ID as KTAG_ORTHANC_SERVER_ID, \
+from ..apisettings import ORTHANC_SERVER_ID as KTAG_ORTHANC_SERVER_ID, \
 	ORTHANC_SERVER_RESOURCE as KTAG_ORTHANC_SERVER_RESOURCE, \
 	ORTHANC_SERVER_SOURCE as KTAG_ORTHANC_SERVER_SOURCE, \
 	ORTHANC_SERVER_DICOM as KTAG_ORTHANC_SERVER_DICOM
@@ -144,22 +142,18 @@ def fetch_kafka_instance_data(sonador_manager, dicom, instanceId):
 		instance_source=dicom.GetInstanceOrigin())
 
 
-def init_export_resource_data(orthanc_config, sonador_manager):
+def init_export_resource_data(sonador_manager):
 	'''	Initialize export of Patient, Study, and Series metadata to the primary Kafka topic for
 		the imaging server.
 	'''
-	conf_sonador = orthanc_config.get(ORTHANC_CONFIG_SECTION_SONADOR, {})
-	conf_kafka = conf_sonador.get(SONADOR_CONF_KAFKA, {})
-
 	logger.warning('Kafka: enable export of Patient, Study, and Series meta')
 
 	if not getattr(sonador_manager, 'kafka_producer', None):
 		raise ValueError('Unable to initialize resource export, manager instance does not include Kafka producer.')
 
-	# Retrieve Kafka topic from configuration
-	kafka_topic = conf_kafka.get(SONADOR_CONF_KAFKA_TOPIC)
-	if not kafka_topic:
-		raise ValueError('Unable to initialize Kafka connection, invalid topic')
+	# Topic comes from the producer, which validated it at construction. The `Sonador.Kafka`
+	# block is parsed once, in `kafka_helpers.build_producer_config`.
+	kafka_topic = sonador_manager.kafka_producer.topic
 
 	
 	def orthanc_kafka_onstable_resource(changeType, level, resource):
@@ -198,22 +192,18 @@ def init_export_resource_data(orthanc_config, sonador_manager):
 		orthanc.ChangeType.STABLE_SERIES, orthanc_kafka_onstable_resource)
 
 
-def init_export_dcm(orthanc_config, sonador_manager):
+def init_export_dcm(sonador_manager):
 	'''	Initialize export of resource DICOM data to primary Kafka topic for the imaging server.
 		DICOM meta export occurs on upload to the server.
 	'''
-	conf_sonador = orthanc_config.get(ORTHANC_CONFIG_SECTION_SONADOR, {})
-	conf_kafka = conf_sonador.get(SONADOR_CONF_KAFKA)
-
 	logger.warning('Kafka: enable export of DICOM resource meta')
 
 	if not getattr(sonador_manager, 'kafka_producer', None):
 		raise ValueError('Unable to initialize resource export, manager instance does not include Kafka producer.')
 
-	# Retrieve Kafka topic from configuration
-	kafka_topic = conf_kafka.get(SONADOR_CONF_KAFKA_TOPIC)
-	if not kafka_topic:
-		raise ValueError('Unable to initialize Kafka connection, invalid topic')
+	# Topic comes from the producer, which validated it at construction. The `Sonador.Kafka`
+	# block is parsed once, in `kafka_helpers.build_producer_config`.
+	kafka_topic = sonador_manager.kafka_producer.topic
 
 	
 	def orthanc_kafka_export_instance_meta(dicom, instanceId):

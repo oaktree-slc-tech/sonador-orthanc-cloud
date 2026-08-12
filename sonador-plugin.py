@@ -22,7 +22,7 @@ from sonador_orthanc.apisettings import ORTHANC_CONFIG_SECTION_DICOMWEB, \
 	ORTHANC_DEFAULT_ENCODING, \
 	SONADOR_RESOURCE_UPDATE_PATIENT, SONADOR_RESOURCE_UPDATE_STUDY, SONADOR_RESOURCE_UPDATE_SERIES, \
 	SONADOR_RESOURCE_DELETE_PATIENT, SONADOR_RESOURCE_DELETE_STUDY, SONADOR_RESOURCE_DELETE_SERIES, \
-	SONADOR_CONF_PRIVATE_TAGS, SONADOR_CONF_DATETIME_TAGS, \
+	SONADOR_CONF_PRIVATE_TAGS, SONADOR_CONF_DATETIME_TAGS, SONADOR_CONF_KAFKA, \
 	SONADOR_CACHE_URL_ROOT, SONADOR_CACHE_TAGS_URL
 from sonador_orthanc.helpers import init_sonador_server
 from sonador_orthanc.manager import SonadorServerManager, \
@@ -49,7 +49,12 @@ CONF_DICOM_PRIVATETAGS = orthanc_conf_privatetags(CONF)
 
 
 # Kafka Configuration
-CONF_KAFKA = CONF_SONADOR.get('Kafka', {})
+#
+# This is a presence check only -- whether the plugin publishes at all. The block itself is
+# parsed once, by `kafka_helpers.build_producer_config` under `init_kafka_producer`, which
+# validates the server list and the optional transport-security settings and raises here, in
+# the Orthanc startup path, if they cannot work.
+CONF_KAFKA = CONF_SONADOR.get(SONADOR_CONF_KAFKA, {})
 if CONF_KAFKA:
 
 	from sonador_orthanc import kafka
