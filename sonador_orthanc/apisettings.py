@@ -12,7 +12,7 @@ from client import apisettings as gapi
 # `/system` endpoint (see `sonador_orthanc.web.system.SonadorOrthancSystemReportView`), alongside
 # `SonadorUrl`; the Sonador viewer surfaces it in its About table as the "Imaging Server Sonador
 # Cloud Plugin Version".
-VERSION = '0.4-dev'
+VERSION = '0.4.1'
 
 # Sonador Cache Index Status Codes
 SONADOR_CACHE_STATUS_CURRENT = 'current'
