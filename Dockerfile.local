@@ -42,8 +42,17 @@ RUN rm -rf /usr/share/orthanc/plugins/plugins-available/libOrthancAuthorization.
 COPY --from=build /usr/share/orthanc/plugins/libOrthancAuthorization.* /usr/share/orthanc/plugins/
 
 # Install Python Requests Module and Other Dependencies
+#
+# libsasl2-modules-gssapi-mit supplies the Cyrus SASL GSSAPI module (libgssapiv2.so) that
+# librdkafka dlopen()s at runtime when the Kafka connection negotiates the GSSAPI mechanism.
+# It is NOT covered by librdkafka-dev, and it is not covered by the librdkafka that the
+# confluent-kafka wheel statically bundles (which is the copy actually linked): both report
+# "gssapi" in builtin.features, because that describes how librdkafka was compiled, not what
+# it can load. Without this package a GSSAPI negotiation fails at connect time with
+# "No worthy mechs found" -- invisible to the build and to any test using another mechanism.
 RUN apt-get update && apt-get install -y git build-essential python3-requests libtiff5-dev libjpeg-dev zlib1g-dev \
   libfreetype6-dev liblcms2-dev libwebp-dev libharfbuzz-dev libfribidi-dev librdkafka-dev \
+  libsasl2-modules libsasl2-modules-gssapi-mit \
   tcl8.6-dev tk8.6-dev python3-tk libpq-dev
 
 # Pre-build pillow-jpls (a source-only, transitive dependency of highdicom 0.22.x, which

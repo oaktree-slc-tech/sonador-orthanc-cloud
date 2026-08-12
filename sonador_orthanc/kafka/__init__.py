@@ -1,9 +1,7 @@
 import logging, traceback, posixpath
-from confluent_kafka import Producer
 import orthanc
 
 from ..apisettings import KAFKA_TIMEOUT_DEFAULT, ORTHANC_CONFIG_SECTION_SONADOR, SONADOR_CONF_KAFKA, \
-	SONADOR_CONF_KAFKA_SERVERS, SONADOR_CONF_KAFKA_TOPIC, SONADOR_KAFKA_BOOTSTRAP, \
 	SONADOR_KAFKA_OPCODE_PUSH_PATIENT, SONADOR_KAFKA_OPCODE_PUSH_STUDY, SONADOR_KAFKA_OPCODE_PUSH_SERIES, \
 	SONADOR_KAFKA_OPCODE_PUSH_IMAGE, SONADOR_KAFKA_OPCODE_PUSH_WORKLIST, SONADOR_KAFKA_OPCODE_PUSH_STUDY_COMMENT, \
 	SONADOR_KAFKA_OPCODE_PUSH_SERIES_COMMENT
@@ -15,7 +13,6 @@ from ..db import comments as sonador_commentsdb
 from ..db import worklist as sonador_worklistdb
 
 from .base import SonadorProducer
-from . import helpers as kafka_helpers
 from . import resource as kafka_resource
 
 logger = logging.getLogger(__name__)
@@ -34,36 +31,14 @@ def init_kafka_producer(orthanc_config):
 def init(orthanc_config, sonador_manager, sessionmaker):
 	'''	Initialize Kafka callbacks and message forwarding
 	'''
-	conf_sonador = orthanc_config.get(ORTHANC_CONFIG_SECTION_SONADOR, {})
-	conf_kafka = conf_sonador.get(SONADOR_CONF_KAFKA)
-
 	if getattr(sonador_manager, 'kafka_producer', None):
 
-		# Retrieve server list from producer instance
-		kafka_servers = kafka_helpers.get_kafka_servers(conf_kafka)
-		if not kafka_servers:
-			raise ValueError('Unable to initialize Kafka connection, invalid server list')
-
-		# Retrieve Kafka topic from configuration
-		kafka_topic = conf_kafka.get(SONADOR_CONF_KAFKA_TOPIC)
-		if not kafka_topic:
-			raise ValueError('Unable to initialize Kafka connection, invalid topic')
-
-		
-		def orthanc_kafka_delivery_report(err, msg):
-			'''	The Kafka producer delivers data asyncrhnously. This function is the
-				callback by the Kafka client to indicate whether a message was delivered
-				successfully or with an error. For successful deliveries, "err" will be None.
-
-				@input err (exception, None for successful deliveries): Error report from the Kafka
-					Producer client.
-				@input msg (message instance): Message instance delivered to the Kafka broker
-			'''
-			if err is not None:
-				orthanc.LogError('Unable to deliver message to Kafka instance %s. Error: %s\n%s' % (
-					err, kafka_servers, msg.value()
-				))
-				sonador_manager.kafka_producer.produce(kafka_topic, msg.value(), callback=orthanc_kafka_delivery_report)
+		# Server list and topic are read off the producer, which validated them when it was
+		# built by `init_kafka_producer`. The `Sonador.Kafka` block is parsed exactly once,
+		# in `kafka_helpers.build_producer_config`; re-reading it here is how a transport
+		# setting ends up applied in one place and not another.
+		kafka_servers = sonador_manager.kafka_producer.servers
+		kafka_topic = sonador_manager.kafka_producer.topic
 
 		def kafka_message_flush(poll_timeout=KAFKA_TIMEOUT_DEFAULT):
 			'''	Flush messages to Kafka and retrieve transaction receipts
@@ -108,8 +83,8 @@ def init(orthanc_config, sonador_manager, sessionmaker):
 
 
 		# Initialize export of resource data
-		kafka_resource.init_export_resource_data(orthanc_config, sonador_manager)
-		kafka_resource.init_export_dcm(orthanc_config, sonador_manager)
+		kafka_resource.init_export_resource_data(sonador_manager)
+		kafka_resource.init_export_dcm(sonador_manager)
 
 		# Initialize Kafka push endpoints
 		from .web import OrthancKafkaExportView, OrthancChildKafkaExportView

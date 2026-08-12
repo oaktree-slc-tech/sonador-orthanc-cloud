@@ -95,6 +95,116 @@ SONADOR_KAFKA_BOOTSTRAP = 'bootstrap.servers'
 SONADOR_KAFKA_REQUEST_DATA = 'RequestData'
 
 
+# Kafka Delivery Retry Policy
+#
+# librdkafka has already exhausted its own `message.send.max.retries` by the time a delivery
+# report arrives with an error, so the application-level retry in
+# `sonador_orthanc.kafka.base.SonadorProducer.delivery_report` is a last resort. It is bounded
+# and backed off so that a broker which is rejecting the client outright -- an expired
+# certificate or a rotated SASL credential, both of which only become possible once the
+# transport is secured -- cannot turn into a hot re-produce loop.
+KAFKA_DELIVERY_MAX_ATTEMPTS = 3
+KAFKA_DELIVERY_RETRY_BACKOFF = 2.0
+
+
+# Kafka Transport Security -- Orthanc Configuration Keys
+#
+# These name the keys of the optional `Sonador.Kafka.security` block. They are lowerCamelCase
+# to match the `topic` and `servers` keys already in that block, and are deliberately NOT the
+# librdkafka property names: the mapping between the two is stated once, in
+# SONADOR_KAFKA_SECURITY_PROPERTY_MAP below, so it can be checked against the upstream
+# librdkafka CONFIGURATION.md without reading any logic.
+SONADOR_CONF_KAFKA_SECURITY = 'security'
+SONADOR_CONF_KAFKA_SECURITY_PROTOCOL = 'protocol'
+
+SONADOR_CONF_KAFKA_SSL = 'ssl'
+SONADOR_CONF_KAFKA_SSL_CA = 'ca'
+SONADOR_CONF_KAFKA_SSL_CERT = 'certificate'
+SONADOR_CONF_KAFKA_SSL_KEY = 'key'
+SONADOR_CONF_KAFKA_SSL_KEY_PASSWORD = 'keyPassword'
+SONADOR_CONF_KAFKA_SSL_KEY_PASSWORD_FILE = 'keyPasswordFile'
+SONADOR_CONF_KAFKA_SSL_VERIFY_HOSTNAME = 'verifyHostname'
+
+SONADOR_CONF_KAFKA_SASL = 'sasl'
+SONADOR_CONF_KAFKA_SASL_MECHANISM = 'mechanism'
+SONADOR_CONF_KAFKA_SASL_USERNAME = 'username'
+SONADOR_CONF_KAFKA_SASL_PASSWORD = 'password'
+SONADOR_CONF_KAFKA_SASL_PASSWORD_FILE = 'passwordFile'
+
+
+# Kafka Transport Security -- librdkafka Property Names
+#
+# Every name below is a documented librdkafka client property. Nothing here is invented: see
+# CONFIGURATION.md in confluent/librdkafka.
+SONADOR_KAFKA_SECURITY_PROTOCOL = 'security.protocol'
+SONADOR_KAFKA_SSL_CA_LOCATION = 'ssl.ca.location'
+SONADOR_KAFKA_SSL_CERTIFICATE_LOCATION = 'ssl.certificate.location'
+SONADOR_KAFKA_SSL_KEY_LOCATION = 'ssl.key.location'
+SONADOR_KAFKA_SSL_KEY_PASSWORD = 'ssl.key.password'
+SONADOR_KAFKA_SSL_ENDPOINT_ALGORITHM = 'ssl.endpoint.identification.algorithm'
+SONADOR_KAFKA_SASL_MECHANISM = 'sasl.mechanism'
+SONADOR_KAFKA_SASL_USERNAME = 'sasl.username'
+SONADOR_KAFKA_SASL_PASSWORD = 'sasl.password'
+
+# Values for `ssl.endpoint.identification.algorithm`. librdkafka spells "verify the broker
+# certificate against the hostname we connected to" as the HTTPS identification algorithm, and
+# "do not" as none; there is no boolean form of the property.
+SONADOR_KAFKA_SSL_ENDPOINT_ALGORITHM_HTTPS = 'https'
+SONADOR_KAFKA_SSL_ENDPOINT_ALGORITHM_NONE = 'none'
+
+# Configuration key -> librdkafka property. `verifyHostname` is absent because it is a boolean
+# that maps onto a value rather than onto a property name; it is handled explicitly by the
+# builder. This map exists to be read, not iterated -- the builder assembles properties in a
+# fixed order so validation can be specific about which key is at fault.
+SONADOR_KAFKA_SECURITY_PROPERTY_MAP = {
+	SONADOR_CONF_KAFKA_SECURITY_PROTOCOL: SONADOR_KAFKA_SECURITY_PROTOCOL,
+	SONADOR_CONF_KAFKA_SSL_CA: SONADOR_KAFKA_SSL_CA_LOCATION,
+	SONADOR_CONF_KAFKA_SSL_CERT: SONADOR_KAFKA_SSL_CERTIFICATE_LOCATION,
+	SONADOR_CONF_KAFKA_SSL_KEY: SONADOR_KAFKA_SSL_KEY_LOCATION,
+	SONADOR_CONF_KAFKA_SSL_KEY_PASSWORD: SONADOR_KAFKA_SSL_KEY_PASSWORD,
+	SONADOR_CONF_KAFKA_SASL_MECHANISM: SONADOR_KAFKA_SASL_MECHANISM,
+	SONADOR_CONF_KAFKA_SASL_USERNAME: SONADOR_KAFKA_SASL_USERNAME,
+	SONADOR_CONF_KAFKA_SASL_PASSWORD: SONADOR_KAFKA_SASL_PASSWORD,
+}
+
+
+# Kafka Transport Security -- Supported Values
+SONADOR_KAFKA_PROTOCOL_PLAINTEXT = 'PLAINTEXT'
+SONADOR_KAFKA_PROTOCOL_SSL = 'SSL'
+SONADOR_KAFKA_PROTOCOL_SASL_PLAINTEXT = 'SASL_PLAINTEXT'
+SONADOR_KAFKA_PROTOCOL_SASL_SSL = 'SASL_SSL'
+
+SONADOR_KAFKA_PROTOCOL_SUPPORTED = (SONADOR_KAFKA_PROTOCOL_PLAINTEXT, SONADOR_KAFKA_PROTOCOL_SSL,
+	SONADOR_KAFKA_PROTOCOL_SASL_PLAINTEXT, SONADOR_KAFKA_PROTOCOL_SASL_SSL)
+
+SONADOR_KAFKA_SASL_MECHANISM_PLAIN = 'PLAIN'
+SONADOR_KAFKA_SASL_MECHANISM_SCRAM_SHA_256 = 'SCRAM-SHA-256'
+SONADOR_KAFKA_SASL_MECHANISM_SCRAM_SHA_512 = 'SCRAM-SHA-512'
+SONADOR_KAFKA_SASL_MECHANISM_GSSAPI = 'GSSAPI'
+SONADOR_KAFKA_SASL_MECHANISM_OAUTHBEARER = 'OAUTHBEARER'
+
+SONADOR_KAFKA_SASL_MECHANISM_SUPPORTED = (SONADOR_KAFKA_SASL_MECHANISM_PLAIN,
+	SONADOR_KAFKA_SASL_MECHANISM_SCRAM_SHA_256, SONADOR_KAFKA_SASL_MECHANISM_SCRAM_SHA_512,
+	SONADOR_KAFKA_SASL_MECHANISM_GSSAPI, SONADOR_KAFKA_SASL_MECHANISM_OAUTHBEARER)
+
+# Mechanisms that authenticate with a username and password supplied by the client. GSSAPI
+# authenticates from a Kerberos keytab and OAUTHBEARER from a token, so neither is required to
+# carry `sasl.username` / `sasl.password` and neither is checked for them.
+SONADOR_KAFKA_SASL_MECHANISM_CREDENTIALED = (SONADOR_KAFKA_SASL_MECHANISM_PLAIN,
+	SONADOR_KAFKA_SASL_MECHANISM_SCRAM_SHA_256, SONADOR_KAFKA_SASL_MECHANISM_SCRAM_SHA_512)
+
+
+# Producer properties whose values are secret and must never reach a log line, at any level.
+# `sonador_orthanc.kafka.helpers.redact_producer_config` is the only sanctioned way to render a
+# producer configuration for logging.
+SONADOR_KAFKA_SECRET_PROPERTIES = frozenset((
+	SONADOR_KAFKA_SSL_KEY_PASSWORD,
+	SONADOR_KAFKA_SASL_PASSWORD,
+))
+
+SONADOR_KAFKA_SECRET_REDACTED = '********'
+
+
 # Kafka Push Operations
 SONADOR_KAFKA_OPCODE_PUSH_PATIENT = 'kafka-export.patient'
 SONADOR_KAFKA_OPCODE_PUSH_STUDY = 'kafka-export.study'

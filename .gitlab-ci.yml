@@ -1,4 +1,5 @@
 stages:
+- test
 - build
 - deploy
 
@@ -8,6 +9,19 @@ variables:
 # Include AutoDevops build
 include:
 - local: .ci/jobs/build.gitlab-ci.yml
+
+# Unit tests. These run in a plain Python image rather than the Orthanc container: the Orthanc SDK
+# and the Sonador imaging stack are stubbed by tests/conftest.py, so the suite needs only pytest.
+pytest:
+  stage: test
+  image: python:3.12-slim
+  script:
+  - pip install --no-cache-dir -r requirements-dev.txt
+  - python -m pytest -q
+  rules:
+  - if: '$CI_COMMIT_BRANCH == "master"'
+  - if: $CI_MERGE_REQUEST_IID
+  - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
 
 # Build containers for master and review
 docker-build:
