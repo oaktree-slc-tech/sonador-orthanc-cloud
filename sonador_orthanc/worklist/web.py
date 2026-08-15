@@ -26,6 +26,7 @@ from ..db.comments import ImagingStudyComment
 from ..db.helpers import orthanc_worklist_studyjson, dcmuid_fetch_dicomidentifier_model
 from ..db.internal import Resource, DicomIdentifiers
 
+from ..dcmquery.study import CacheStudyQueryMixin
 
 from ..web.base import OrthancBaseView
 from ..web.ext import ResourceChildManagementBaseView, ResourceChildBaseRestView
@@ -449,6 +450,25 @@ class StudyReviewerWorklistItemDICOMListView(AdminUserLookupMixin, AdminGroupLoo
 	'''	Study reviewer worklist: DICOMWeb REST endpoint. Retrieves the worklist items for the
 		groups associated with the current user.
 	'''
+	# Worklist columns clients may order by, in addition to the study/patient headers the study
+	# list supports. `State` is the wire name used by the state filter and `Status` the name the
+	# viewer's column carries; both name the item's state.
+	#
+	# The assigned user and group are deliberately absent: they are stored as Sonador account and
+	# group IDs and resolved to names out of band (`sonador_user_lookup`), so ordering on them
+	# would sort by an identifier which appears nowhere in the list.
+	orderby_resource_columns = {
+		**CacheStudyQueryMixin.orderby_resource_columns,
+		'State': StudyReviewerWorklistItem.state,
+		'Status': StudyReviewerWorklistItem.state,
+	}
+
+	def orderby_identity_fields(self):
+		'''	A study can carry several worklist items, so a row here is identified by the item as
+			well as the study it belongs to.
+		'''
+		return super().orderby_identity_fields() + [StudyReviewerWorklistItem.uid]
+
 	def setup(self, output, uri, request, *args, **kwargs):
 		super().setup(output, uri, request, *args, **kwargs)
 
