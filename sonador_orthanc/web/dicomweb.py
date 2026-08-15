@@ -31,6 +31,7 @@ from ..db.internal import Resource, DicomIdentifiers
 from ..db.cache import CachePatient, CacheStudy, CacheSeries, CacheInstance
 from ..db.helpers import dcmquery2psqlregex, dcmuid_fetch_dicomidentifier_model
 from ..dcmquery.auth import StudyResourceAclMixin
+from ..dcmquery.base import UnorderableDicomHeader
 
 from ..cache.web import ResourceBaseMixin
 from ..cache.web.study import CacheStudyListBaseView, SonadorStudyResourceMixin
@@ -107,11 +108,22 @@ class CacheStudyDicomWebListView(StudyResourceAclMixin, SecureResourceQueryViewM
 		'''	Return list of studies which match the requested parameters
 		'''
 		with self.sessionmaker() as session:
-			dweb_studies = self.get_studylist(session, 
-				force_apply_queryfilter=self.force_apply_queryfilter)
+			try:
+				dweb_studies = self.get_studylist(session,
+					force_apply_queryfilter=self.force_apply_queryfilter)
+
+			except UnorderableDicomHeader as e:
+				# An `OrderBy` the cache is unable to sort on is a bad request rather than a server
+				# fault. Report it as one so that a client which asks for an unsupported sort gets a
+				# message it can act on instead of a plugin engine error.
+				logger.warning('Rejected DICOMweb study list request: %s' % e)
+				return self.send_response(json.dumps({
+					'Message': str(e),
+					SONADOR_CACHE_ORDER_BY: e.header,
+				}), status_code=400)
 
 			return self.send_response(json.dumps(
-				[self.dcmweb_studyjson(cs) for cs in dweb_studies[self.offset:self.limit+self.offset]], 
+				[self.dcmweb_studyjson(cs) for cs in dweb_studies[self.offset:self.limit+self.offset]],
 				cls=SonadorJsonEncoder))
 
 
