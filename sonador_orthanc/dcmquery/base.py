@@ -18,6 +18,18 @@ from ..db.helpers import dcmquery2psqlregex, dcmquery_psqlregex_flags
 logger = logging.getLogger(__name__)
 
 
+class UnorderableDicomHeader(ValueError):
+	'''	Raised when an `OrderBy` header cannot be resolved to a field the query is able to sort on.
+
+		Carries the offending header so that views are able to report it to the client as a bad
+		request instead of failing the whole query with a server error.
+	'''
+	def __init__(self, header, reason=None):
+		self.header = header
+		self.reason = reason or 'Invalid DICOM header'
+		super().__init__('Unable to order resources by "%s". %s.' % (header, self.reason))
+
+
 class DicomQueryMixin(ABC):
 	'''	Helper mixin which provides methods for translating DICOM queries into Sonador
 		resource cache queries
@@ -31,6 +43,11 @@ class DicomQueryMixin(ABC):
 	resource_mtime_query = None
 	datetime_query_timedelta = datetime.timedelta(minutes=30)
 	order_by = None
+
+	# Non-DICOM columns carried on the resource row itself which clients may order by, keyed by the
+	# header sent in `OrderBy`. Resource queries add the columns that belong to their model (refer
+	# to `CacheStudyQueryMixin`).
+	orderby_resource_columns = {}
 
 	def _init_dcmquery(self, *args, **kwargs):
 		'''	Ensure that required class components are present
@@ -348,71 +365,104 @@ class DicomQueryMixin(ABC):
 			@returns filtered query
 		'''
 
-	def apply_ordering(self, dcm_resources, order_by: Sequence[str], **kwargs):
-		'''	Apply ordering options to the DICOM resource query
+	def orderby_json_expression(self, otag, resource_type, private_tag):
+		'''	Build the ordering expression for a DICOM tag held in a resource's `orthanc` JSON blob.
 
-			@returns ordered query
+			Resolves the tag against the cache model for its resource level. Queries whose FROM
+			clause does not contain that model override this to sort on the same value another way
+			(refer to `CacheStudyQueryMixin`).
+
+			@input otag (str): DICOM header to order on
+			@input resource_type (str): resource level (Patient, Study, Series) the header belongs to
+			@input private_tag (bool): whether the header is a configured private tag
+
+			@returns SQLAlchemy expression
 		'''
-		orderby_fields = kwargs.get('orderby_fields') or []
-
 		# Retrieve any aliases associated with the query to ensure that ordering conditions
 		# get applied consistently.
 		_aliases = getattr(self, '_aliases', {})
 
+		tag_resource_model = SONADOR_CACHE_MODELS.get(resource_type)
+		if private_tag:
+			tag_resource_model = tag_resource_model.privatetags_resource_model
+
+		if _aliases.get(tag_resource_model):
+			return _aliases[tag_resource_model].orthanc[otag].astext
+
+		return tag_resource_model.orthanc[otag].astext
+
+	def resolve_orderby_field(self, otag):
+		'''	Resolve an `OrderBy` header to the database expression the query should sort on.
+
+			@input otag (str): DICOM header to order on, without a sort-direction prefix
+
+			@raises UnorderableDicomHeader: the header does not name a field the query can sort on
+			@returns SQLAlchemy expression
+		'''
+		# Order on the resource mtime column (Modified or LastUpdate) rather than a JSON field
+		if otag in (IMAGING_SERVER_LAST_UPDATE, IMAGING_SERVER_MODIFIED):
+			return self.resource_model.mtime
+
+		# Order on a non-DICOM column carried by the resource row itself
+		if otag in (self.orderby_resource_columns or {}):
+			return self.orderby_resource_columns[otag]
+
+		# Determine the resource level (Patient, Study, Series) at which the header is held. The
+		# tags cache also carries a combined `Tags` entry, so only levels with a cache model count.
+		resource_type = None
+		for rtype, rtags in (self.cache_dicomtags or {}).items():
+			if rtype in SONADOR_CACHE_MODELS and otag in rtags:
+				resource_type = rtype
+				break
+
+		if resource_type is None:
+			raise UnorderableDicomHeader(otag)
+
+		# Private tags live in the resource's private tag table rather than its own JSON blob
+		private_tag = otag in ((self.dcm_privatetags or {}).get(resource_type) or ())
+
+		return self.orderby_json_expression(otag, resource_type, private_tag)
+
+	def orderby_identity_fields(self):
+		'''	Columns appended after the requested ordering so that the query has a deterministic
+			total order. Queries whose rows are not identified by the resource alone override this
+			(refer to the DICOMweb worklist).
+
+			@returns list of SQLAlchemy columns
+		'''
+		return [self.resource_model.uid]
+
+	def apply_ordering(self, dcm_resources, order_by: Sequence[str], **kwargs):
+		'''	Apply ordering options to the DICOM resource query
+
+			@raises UnorderableDicomHeader: a requested header cannot be sorted on
+			@returns ordered query
+		'''
+		orderby_fields = kwargs.get('orderby_fields') or []
+
+		# A single header may be provided as a bare string (the `/cache` query views read `OrderBy`
+		# straight out of the request body). Wrap it so that the loop below walks headers rather
+		# than the characters of one.
+		if isinstance(order_by, str):
+			order_by = [order_by]
+
 		# Retrieve dataabase field for provided header
 		for otag in order_by:
 
-			# Determine whether ascending or descending for sort order
-			if otag.startswith('-'):
-				otag = otag.replace('-', '')
-				desc = True
-			else: desc = False
+			# A leading "-" requests a descending sort
+			desc = otag.startswith('-')
+			if desc:
+				otag = otag[1:]
 
-			# Determine the type of tag: resource level (Patient, Study, Series) and whether it is public/private
-			resource_type = private_tag = None
+			expr = self.resolve_orderby_field(otag)
+			orderby_fields.append(expr.desc() if desc else expr)
 
-			# Filter on resource mtime field (Modified or LastUpdate)
-			if otag == IMAGING_SERVER_LAST_UPDATE or otag == IMAGING_SERVER_MODIFIED:
-
-				# Set resource type and and resource model to prevent ordering on JSON field
-				resource_type = self.resource_model.type
-				private_tag = False
-
-				orderby_fields.append(
-					self.resource_model.mtime.desc() if desc else self.resource_model.mtime)
-
-			# Filter on JSON fields (cache model or private cache model)
-			if resource_type is None and private_tag is None:
-
-				# Determine which level of the API at which to apply the header
-				for rtype,rtags in self.cache_dicomtags.items():
-					if otag in rtags:
-						resource_type = rtype
-						break
-
-				# Determine if the header is public or private
-				if self.dcm_privatetags:
-					for rtype,ptags in self.dcm_privatetags.items():
-						if otag in ptags:
-							private_tag = True
-
-				# Unable to locate private tag, mark as public
-				if resource_type and private_tag is None:
-					private_tag = False
-				else:
-					raise ValueError('Unable to order resources. Invalid DICOM header "%s".' % otag)
-
-				# Retrieve tag model and add to ordering options
-				tag_resource_model = SONADOR_CACHE_MODELS.get(resource_type)
-				if private_tag:
-					tag_resource_model = tag_resource_model.privatetags_resource_model
-
-				if _aliases.get(tag_resource_model):
-					expr = _aliases[tag_resource_model].orthanc[otag].astext
-				else:
-					expr = tag_resource_model.orthanc[otag].astext
-
-				orderby_fields.append(expr.desc() if desc else expr)
+		# Rows tied on the requested headers have no order of their own, and each page of a result
+		# set is a separate query -- so a tie can put a row on two pages, or on none, as a client
+		# walks them. Low-cardinality headers make that the common case rather than the corner one:
+		# a worklist ordered by state is ties almost the whole way down. Appending row identity
+		# gives the ordering a deterministic total order, so paging is repeatable.
+		orderby_fields.extend(self.orderby_identity_fields())
 
 		return dcm_resources.order_by(*tuple(orderby_fields))
 
