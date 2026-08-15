@@ -1,7 +1,7 @@
 import logging
 
 from sqlalchemy.orm import joinedload, aliased
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, select
 
 from client.errors import ConfigurationError
 from client.utils.object import omit, pick
@@ -9,8 +9,9 @@ from client.utils.object import omit, pick
 from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_SERIES, \
 	DCMHEADER_MODALITIES_IN_STUDY, DCMHEADER_MODALITY, DCMHEADER_SERIES_DATE, DCMHEADER_STUDY_DATE
 
-from ..db.cache import CachePatient, CacheStudy, CacheSeries
+from ..db.cache import CachePatient, CacheStudy, CacheSeries, SONADOR_CACHE_MODELS
 from ..db.helpers import dcmquery_psqlregex_flags
+from .base import UnorderableDicomHeader
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,13 @@ class CacheStudyQueryMixin(object):
 	study_date_filter = None
 	series_date_filter = None
 	study_modalities = None
+
+	# Study columns which clients may order by but which are not held in the study's JSON blob.
+	# `ModalitiesInStudy` is aggregated onto the study row from its series, and backs the study
+	# list's "Modality" column.
+	orderby_resource_columns = {
+		DCMHEADER_MODALITIES_IN_STUDY: CacheStudy.modalities,
+	}
 
 	def _init_studyquery(self, *args, **kwargs):
 		'''	Ensure that the required properties and methods for the query object are present.
@@ -45,6 +53,43 @@ class CacheStudyQueryMixin(object):
 			.outerjoin(CachePatient, CachePatient.uid == CacheStudy.parent_id)
 		
 		return base
+
+	def orderby_json_expression(self, otag, resource_type, private_tag):
+		'''	Order a study list on a DICOM tag held in a resource `orthanc` JSON blob.
+
+			Only the study's own public tags are guaranteed to be in the query's FROM clause. The
+			private tag tables are reached through a `joinedload` alias, and views which build their
+			own base resource list do not necessarily join the patient at all -- the DICOMweb
+			worklist joins studies to worklist items and never joins `CachePatient`. Naming those
+			models directly in ORDER BY therefore produces SQL which references a table the query
+			has not joined ("invalid reference to FROM-clause entry"). Sorting through a correlated
+			subquery instead reads the same value without any dependency on the query's joins.
+
+			@raises UnorderableDicomHeader: the tag is held at a level which cannot order studies
+			@returns SQLAlchemy expression
+		'''
+		# A study has many series, so a series tag names no single value to sort a study list on
+		# and joining the series would repeat each study once per series it contains.
+		if resource_type == IMAGING_SERVER_RESOURCE_SERIES:
+			raise UnorderableDicomHeader(otag, 'Series tags cannot be used to order a study list')
+
+		# The study's own public tags are on the row the query already selects
+		if resource_type == IMAGING_SERVER_RESOURCE_STUDY and not private_tag:
+			return CacheStudy.orthanc[otag].astext
+
+		tag_resource_model = SONADOR_CACHE_MODELS.get(resource_type)
+		if private_tag:
+			tag_resource_model = tag_resource_model.privatetags_resource_model
+
+		# Correlate against the study row: patient rows (and their private tags) are keyed by the
+		# study's parent, study private tags share the study's own UID.
+		if resource_type == IMAGING_SERVER_RESOURCE_PATIENT:
+			correlation = tag_resource_model.uid == CacheStudy.parent_id
+		else:
+			correlation = tag_resource_model.uid == CacheStudy.uid
+
+		return select(tag_resource_model.orthanc[otag].astext) \
+			.where(correlation).correlate(CacheStudy).scalar_subquery()
 
 	def apply_session_options(self, session, basequery, *args, **kwargs):
 		'''	Apply options to the base query. Provides a hook to load related data or apply modify
