@@ -1,11 +1,20 @@
 # syntax = docker/dockerfile:experimental
 
 
-FROM orthancteam/orthanc:26.6.1-full as build
+FROM orthancteam/orthanc:26.8.2-full as build
 ARG AUTH_COMMIT_SHA
 
 # Install Dependencies
-#  - git + mercurial: the plugin's CMake fetches the Orthanc framework "mainline" via "hg"
+#  - git: clones the plugin sources
+#  - mercurial: kept as a fallback framework source. Since the plugin pins itself to
+#    0.12.0-sonador, its CMake takes the release path and fetches an MD5-verified
+#    Orthanc 1.13.0 tarball over HTTPS rather than cloning "mainline" over "hg";
+#    passing -DORTHANC_FRAMEWORK_SOURCE=hg still works for debugging a build.
+#  - libarchive-tools: supplies bsdtar. TAR_EXECUTABLE redirects the framework's
+#    framework and third-party extraction away from GNU tar, which unpacks archives via
+#    openat2(..., RESOLVE_BENEATH) and so fails with ENOSYS on a pre-5.6 kernel
+#    without falling back. Same fix as orthanc-s3; the tarball and its MD5 are
+#    unchanged, only the tool that extracts it.
 #  - libjsoncpp-dev: Orthanc uses jsoncpp (NOT json-rpc-cpp) for JSON
 #  - libpugixml-dev: required by the Orthanc framework core
 #  - libboost-all-dev: covers all Boost components the framework links
@@ -13,7 +22,7 @@ ARG AUTH_COMMIT_SHA
 #  - zlib1g-dev / uuid-dev: framework core dependencies
 #  - googletest / libgtest-dev: system Google Test (see USE_SYSTEM_GOOGLE_TEST below)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git mercurial build-essential cmake curl unzip tar ca-certificates \
+    git mercurial build-essential cmake curl unzip tar ca-certificates libarchive-tools \
     libjsoncpp-dev libpugixml-dev libboost-all-dev \
     libcurl4-openssl-dev libssl-dev zlib1g-dev uuid-dev \
     googletest libgtest-dev \
@@ -26,13 +35,14 @@ RUN cd /tmp/orthanc \
   && git clone https://code.oak-tree.tech/oak-tree/medical-imaging/orthanc-authorization.git auth && cd auth \
   && git checkout $AUTH_COMMIT_SHA \
   && mkdir -p /tmp/orthanc/build && cd /tmp/orthanc/build \
-  && cmake -DCMAKE_BUILD_TYPE=Release -DALLOW_DOWNLOADS=ON -DUSE_SYSTEM_GOOGLE_TEST=ON -DUSE_SYSTEM_ORTHANC_SDK=OFF /tmp/orthanc/auth/ \
+  && cmake -DCMAKE_BUILD_TYPE=Release -DALLOW_DOWNLOADS=ON -DUSE_SYSTEM_GOOGLE_TEST=ON -DUSE_SYSTEM_ORTHANC_SDK=OFF \
+    -DORTHANC_FRAMEWORK_TAR=/usr/bin/bsdtar -DTAR_EXECUTABLE=/usr/bin/bsdtar /tmp/orthanc/auth/ \
   && make -j$(nproc) OrthancAuthorization \
   && cp libOrthancAuthorization.* /usr/share/orthanc/plugins/
 
 
 # The Osimis "full" image contains all cloud storage plugins along
-FROM orthancteam/orthanc:26.6.1-full
+FROM orthancteam/orthanc:26.8.2-full
 ARG CI_COMMIT_SHA
 ARG CLI_CI_COMMIT_SHA
 
@@ -89,10 +99,6 @@ RUN mkdir -p /opt/orthanc/ \
   && git clone https://code.oak-tree.tech/oak-tree/medical-imaging/orthanc-sonador.git \
   && cd orthanc-sonador && git checkout $CI_COMMIT_SHA \
   && git submodule update --init --recursive --remote \
-  # STOPGAP: the cloned repo still pins psycopg2-binary==2.9.3, which has no Python 3.14
-  # wheel and fails to compile against the 3.14 C API (_PyInterpreterState_Get removed).
-  # 2.9.12 ships cp314 wheels. Remove this sed once the bump is committed to orthanc-sonador.
-  && sed -i 's/^psycopg2-binary==2\.9\.3$/psycopg2-binary==2.9.12/' requirements.txt \
   && pip3 install --timeout 30 -r requirements.txt --break-system-packages
 
 # Install Sonador CLI Client
