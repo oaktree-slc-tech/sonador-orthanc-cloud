@@ -196,21 +196,22 @@ class ResourceChildBaseRestView(ResourceChildMixin, ObjectBaseRestView):
 	def syslog_err_validation(self, err, *args, **kwargs):
 		'''	Create system log validation error
 		'''
-		return 'Unable to update child object "%s" due to a form validation error. Error:\n%s' % (
-			self.model.__name__, err
+		return 'Unable to %s child object "%s" due to a form validation error. Error:\n%s' % (
+			'remove' if kwargs.get('delete') else 'update', self.model.__name__, err
 		)
 
 	def syslog_exception(self, err, *args, **kwargs):
 		'''	Create system exception error
 		'''
-		if kwargs.get('update'):
+		if kwargs.get('update') or kwargs.get('delete'):
 
 			# Retrieve resource and object UID from URL
 			getobj_kwargs = self.get_object_kwargs(*args, **kwargs)
-			cid = kwargs.get('cid')
-			rid = kwargs.get('rid')
+			cid = getobj_kwargs.get('cid')
+			rid = getobj_kwargs.get('rid')
 
-			return 'Unable to update %s=%s %s=%s due to error. Error: %s\n%s' % (
+			return 'Unable to %s %s=%s %s=%s due to error. Error: %s\n%s' % (
+				'remove' if kwargs.get('delete') else 'update',
 				self.resource_cachemodel.type, rid, self.model.type, cid, err, traceback.format_exc()
 			)
 

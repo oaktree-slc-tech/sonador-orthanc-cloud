@@ -12,6 +12,9 @@ from sonador.apisettings import IMAGING_SERVER_RESOURCE_PATIENT, IMAGING_SERVER_
 	IMAGING_SERVER_RESOURCE_SERIES, IMAGING_SERVER_RESOURCE_STUDY, IMAGING_SERVER_RESOURCE_IMAGE, DCMHEADER_SERIES_INSTANCE_UID, DCMHEADER_STUDY_INSTANCE_UID
 from sonador.serialization import SonadorJsonEncoder
 
+from ..apisettings import SONADOR_USER_ATTRS_DEFAULT, SONADOR_KAFKA_REMOVED_BY, \
+	SONADOR_KAFKA_OPCODE_REMOVE_STUDY_COMMENT, SONADOR_KAFKA_OPCODE_REMOVE_SERIES_COMMENT
+
 from ..db.comments import ImagingSeriesComment, ImagingStudyComment
 from ..db.helpers import orthanc_commentjson
 from ..validation import CommentValidationForm
@@ -165,8 +168,23 @@ class CommentBaseRestView(KafkaMixin, AdminUserLookupMixin, UserContextMixin, Re
 		# Retrieve user context and add to keyword arguments
 		self.init_user_context(self.request)
 		form_kwargs['request_user'] = self.user
+
+		# The update rule checks comment_edit on the parent resource as well as authorship
+		if kwargs.get('update') and kwargs.get('obj') is not None:
+			form_kwargs['resource_perms'] = self.get_resource_perms(kwargs.get('obj'))
+
 		return form_kwargs
 	
+	def validate_form_data(self, session, obj, *args, **kwargs):
+		'''	Validate an update. Fields the request leaves out are carried over from the stored
+			comment, so a text-only PUT keeps the comment's metadata (and a metadata-only PUT keeps
+			its text); the form otherwise writes its defaults over them.
+		'''
+		return self.modelform.clean(**{
+			**self._backfill_object_attrs(obj), **self.POST,
+			**self.modelform_kwargs(session=session, obj=obj, update=True, **kwargs)
+		})
+
 	def save_object_data(self, session, obj, form_instance, *args, **kwargs):
 		# Save to db
 		obj = super().save_object_data(session, obj, form_instance)
@@ -176,12 +194,61 @@ class CommentBaseRestView(KafkaMixin, AdminUserLookupMixin, UserContextMixin, Re
 
 		return obj
 
+	def get_resource_perms(self, obj, *args, **kwargs):
+		'''	Introspect the request credential's permissions on the comment's parent resource.
+
+			@returns dict: permissions in the Sonador ACL vocabulary (`view`, `comment_edit`, ...)
+		'''
+		_iserver = self.sonador_manager.get_internal_imageserver()
+		_creds = self.get_user_creds(self.request, *args, **kwargs)
+
+		_r = _iserver.introspect_resource_perms(self.resource_cachemodel.type,
+			getattr(obj, self.model.resource_foreignkey_attr), _creds[0], _creds[1])
+
+		return (_r.json() or {}).get('perms', {}) or {}
+
+	def validate_delete(self, session, obj, *args, **kwargs):
+		'''	Removal requires `remove` on the parent resource, or `comment_edit` on it together with
+			authorship of the comment. Permissions are introspected for every request so a revoked
+			grant is honoured immediately.
+		'''
+		self.init_user_context(self.request)
+
+		self.modelform.validate_removal(obj, request_user=self.user,
+			resource_perms=self.get_resource_perms(obj, *args, **kwargs))
+
+	def fetch_kafka_removal_data(self, session, obj, *args, **kwargs):
+		'''	Build the Kafka message for a removed comment. Assembled from the model instance
+			rather than fetched back through the API, since the comment no longer exists once
+			the message is sent.
+		'''
+		cdata = self.orthanc_objectjson(obj, *args, **kwargs)
+		cdata['Resource'] = 'Comment'
+		cdata[gcapicodes.OPCODE] = self.kafka_removal_opcode
+		cdata[SONADOR_KAFKA_REMOVED_BY] = pick(self.user, SONADOR_USER_ATTRS_DEFAULT)
+
+		return cdata
+
+	def delete_object(self, session, obj, *args, **kwargs):
+		'''	Remove the comment and, once the delete has committed, announce it on the Kafka topic
+		'''
+		_kafka = self.fetch_kafka_removal_data(session, obj, *args, **kwargs) if self.kafka_topic else None
+
+		obj = super().delete_object(session, obj, *args, **kwargs)
+
+		if _kafka is not None:
+			self.publish_kafka_data(_kafka)
+
+		return obj
+
 
 # Series Comments Views
 
 class KafkaSeriesCommentMixin:
 	''' Kafka Mixin which provides fetch_kafka_data for series comments
 	'''
+	kafka_removal_opcode = SONADOR_KAFKA_OPCODE_REMOVE_SERIES_COMMENT
+
 	def fetch_kafka_data(self, session, obj, *args, **kwargs):
 		return get_series_comment_kafka_data(self.sonador_manager, obj.series.uid, obj.uid)
 
@@ -238,6 +305,8 @@ class CommentSeriesDICOMRestView(DicomUidJsonMixin, DicomResourceMixin, CommentS
 class KafkaStudyCommentMixin:
 	''' Kafka Mixin which provides fetch_kafka_data for study comments
 	'''
+	kafka_removal_opcode = SONADOR_KAFKA_OPCODE_REMOVE_STUDY_COMMENT
+
 	def fetch_kafka_data(self, session, obj, *args, **kwargs):
 		return get_study_comment_kafka_data(self.sonador_manager, obj.study.uid, obj.uid)
 

@@ -14,6 +14,17 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
+`tests_runtime/` holds tests that exercise the view classes with their real dependencies and
+doubles only for the database session, the request output and the Kafka producer. They need the
+plugin's runtime, so run them inside the plugin container:
+
+```bash
+python3 -m pytest tests_runtime
+```
+
+The two suites bootstrap the import system differently (`tests/` stubs the runtime, `tests_runtime/`
+uses it), so run them as separate `pytest` invocations rather than one.
+
 
 ### Kafka Transport Security
 The Kafka producer supports TLS and SASL through an optional `security` block on
