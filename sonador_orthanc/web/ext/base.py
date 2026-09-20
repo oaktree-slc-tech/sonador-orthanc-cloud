@@ -411,23 +411,49 @@ class ObjectBaseRestView(OrthancViewValidationMixin, ObjectViewMixin, OrthancBas
 			gcapicodes.STATUS: gcapicodes.SUCCESS,
 		}
 
+	def validate_delete(self, session, obj, *args, **kwargs):
+		'''	Validate a removal request before the object is deleted. Raise a
+			pydantic.ValidationError to refuse the removal (answered as a 400).
+		'''
+		return None
+
+	def delete_object(self, session, obj, *args, **kwargs):
+		'''	Remove the object from the database and commit
+		'''
+		session.delete(obj)
+		session.commit()
+
+		return obj
+
 	def delete(self, output, uri, request, *args, **kwargs):
 		''' Delete object instance
 		'''
 		try: 
 			with self.sessionmaker() as session:
 
-				# Delete object from database
-				obj = self.get_object(session, self.get_object_kwargs(*args, session=session, **kwargs))
-				session.delete(obj)
-				session.commit()
+				# Retrieve object from database
+				obj = self.get_object(session, **self.get_object_kwargs(*args, session=session, **kwargs))
 
-				# Response and status code
+				# Refuse the removal if the request does not satisfy the view's rules
+				self.validate_delete(session, obj, *args, **kwargs)
+
+				# Response is assembled before the delete, while the instance is still attached
 				_response = self.delete_response_json(obj, *args, **kwargs)
 				_status = 200
 
+				# Delete object from database
+				self.delete_object(session, obj, *args, **kwargs)
+
 				return self.send_response(json.dumps(_response, cls=self.json_cls), status_code=_status,
 					headers=self.get_response_headers(_response, _status, gcapicodes.HTTP_DELETE, *args, **kwargs))
+
+		# Validation error
+		except PydanticValidationError as err:
+			logger.error(self.syslog_err_validation(err, *args, delete=True, **kwargs))
+
+			return self.send_response(
+				json.dumps(self.validation_error_response(err), cls=self.json_cls),
+				status_code=self.error_status_code)
 
 		except ResourceDoesNotExist as err:
 			response = ({
@@ -436,3 +462,10 @@ class ObjectBaseRestView(OrthancViewValidationMixin, ObjectViewMixin, OrthancBas
 			})
 
 			return self.http404_resource_not_found(response=response)
+
+		except Exception as err:
+			logger.error(self.syslog_exception(err, *args, delete=True, **kwargs))
+
+			return self.send_response(json.dumps({
+				'error': str(err), gcapicodes.STATUS: gcapicodes.FAIL
+			}, cls=self.json_cls), status_code=self.server_error_status_code)

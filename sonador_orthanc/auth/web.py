@@ -152,17 +152,41 @@ class AuthManagementView(AuthJsonMixin, ResourceChildManagementBaseView):
 		'''	Retrieve the auth grants for the specified resource
 		'''
 		ruid = ruid or self.get_resource_uid(*args, **kwargs)
-		_acl = session.query(self.model).filter_by(resource=ruid)
+		return self.describe_policies(session, ruid)
+
+	def describe_policies(self, session, ruid):
+		'''	Retrieve the auth grants recorded against the resource, look their principals up in
+			Sonador, and return the grants whose principal is known.
+		'''
+		_acl = list(session.query(self.model).filter_by(resource=ruid))
 
 		# Retrieve user or group details
 		_acl_policy_type_uids = set([
 			getattr(_p, self.auth_policy_type_attr) for _p in _acl if getattr(_p, self.auth_policy_type_attr, None)
 		])
 
-		if _acl_policy_type_uids:
-			setattr(self, 'acltype_collection', self.acltype_collection_lookup(_acl_policy_type_uids))
+		if not _acl_policy_type_uids:
+			return _acl
 
-		return _acl
+		collection = self.acltype_collection_lookup(_acl_policy_type_uids)
+		setattr(self, 'acltype_collection', collection)
+
+		# A policy whose principal Sonador no longer knows is left out of the listing: the user or
+		# group has been removed from Sonador, nobody can hold it any more, and its row is for the
+		# record-synchronisation clean-up rather than for clients. Logged so the stale rows are
+		# visible to operators.
+		policies = []
+		for _p in _acl:
+			principal = getattr(_p, self.auth_policy_type_attr, None)
+
+			if principal and not (collection and collection.get_modelinstance(principal)):
+				logger.warning('Omitting %s policy uid=%s on %s=%s: %s id=%s is not known to Sonador.'
+					% (self.model.__name__, _p.uid, self.resource_cachemodel.type, ruid, self.auth_policy_type_attr, principal))
+				continue
+
+			policies.append(_p)
+
+		return policies
 
 	def init_object_model(self, ruid=None, **kwargs):
 		''' Initialize new auth grant model instance
@@ -244,20 +268,10 @@ class AuthDICOMManagementView(DicomUidJsonMixin, DicomResourceMixin, AuthManagem
 		self._init_dicom_json(*args, **kwargs)
 
 	def get_objects(self, session, *args, ruid=None, **kwargs):
-		'''	Retrieve the instance for the view resource
+		'''	Retrieve the auth grants for the DICOM resource (addressed by its DICOM UID)
 		'''
 		r = self.get_resource(session, *args, **kwargs)
-		_acl = session.query(self.model).filter_by(resource=r.publicid)
-
-		# Retrieve user or group details
-		_acl_policy_type_uids = set([
-			getattr(_p, self.auth_policy_type_attr) for _p in _acl if getattr(_p, self.auth_policy_type_attr, None)
-		])
-
-		if _acl_policy_type_uids:
-			setattr(self, 'acltype_collection', self.acltype_collection_lookup(_acl_policy_type_uids))
-		
-		return _acl
+		return self.describe_policies(session, r.publicid)
 
 
 class AuthDICOMRestView(DicomUidJsonMixin, DicomResourceMixin, AuthRestView):

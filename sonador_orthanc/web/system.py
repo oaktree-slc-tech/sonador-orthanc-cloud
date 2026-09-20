@@ -19,7 +19,7 @@ from sonador_orthanc_common.apisettings import ORTHANC_SONADOR_CONFIG_URL, ORTHA
 	ORTHANC_CONNECTION_STATE, ORTHANC_CONNECTION_STATE_CONNECTED, ORTHANC_CONNECTION_STATE_OFFLINE, \
 	ORTHANC_SONADOR_CONNECTION, ORTHANC_CONFIG_SECTION_DICT, ORTHANC_CONFIG_SECTION_SONADOR
 
-from ..apisettings import VERSION, SONADOR_CACHE_COUNT_PATIENT, SONADOR_CACHE_COUNT_STUDY, SONADOR_CACHE_COUNT_SERIES, \
+from ..apisettings import VERSION, SONADOR_USER_ATTRS_DEFAULT, SONADOR_CACHE_COUNT_PATIENT, SONADOR_CACHE_COUNT_STUDY, SONADOR_CACHE_COUNT_SERIES, \
 	SONADOR_CONF_PRIVATE_TAGS, SONADOR_CONF_DATETIME_TAGS, SONADOR_CONF_PRIVATE_TAGS, \
 	SONADOR_CONF_KAFKA, SONADOR_CONF_KAFKA_TOPIC
 from ..db.cache import CacheSeries, CacheStudy, CachePatient
@@ -85,6 +85,11 @@ class SonadorOrthancSystemReportView(UserContextMixin, OrthancBaseView):
 		sys_kafka = sys_sonador.get(SONADOR_CONF_KAFKA, {})
 		if sys_kafka and sys_kafka.get(SONADOR_CONF_KAFKA_TOPIC):
 			sys_info['SonadorKafka'] = { 'Enabled': True, 'DcmTopic': sys_kafka.get(SONADOR_CONF_KAFKA_TOPIC) }
+
+		# Identity of the request user, so clients can tell which comments and other user-owned
+		# objects belong to the signed-in user.
+		if getattr(self, 'user', None):
+			sys_info['User'] = pick(self.user, SONADOR_USER_ATTRS_DEFAULT)
 
 		# Filter sensitive system details
 		if getattr(self, 'user', None) and not self.user.is_superuser:

@@ -1,10 +1,10 @@
-import logging, abc, json, threading
+import logging, abc, collections, json, threading, time
 from confluent_kafka import Producer
 
 from sonador.serialization import SonadorJsonEncoder
 
 from ..apisettings import KAFKA_DELIVERY_MAX_ATTEMPTS, KAFKA_DELIVERY_RETRY_BACKOFF, \
-	SONADOR_CONF_KAFKA_TOPIC, SONADOR_KAFKA_BOOTSTRAP
+	KAFKA_PENDING_MAX_MESSAGES, SONADOR_CONF_KAFKA_TOPIC, SONADOR_KAFKA_BOOTSTRAP
 
 from . import helpers as kafka_helpers
 
@@ -20,6 +20,9 @@ class SonadorProducer:
 	delivery_max_attempts = KAFKA_DELIVERY_MAX_ATTEMPTS
 	delivery_retry_backoff = KAFKA_DELIVERY_RETRY_BACKOFF
 
+	# Messages the local producer queue refused synchronously, kept for re-enqueue.
+	pending_max_messages = KAFKA_PENDING_MAX_MESSAGES
+
 	def __init__(self, kafka_config):
 		''' Initialize the Sonador producer instance
 		'''
@@ -33,6 +36,10 @@ class SonadorProducer:
 
 		# Initialize producer instance
 		self.producer = Producer(producer_config)
+		self.pending = collections.deque()
+		# Guards every read-modify-write of `pending`: request threads retain, the scheduler
+		# thread retries, and shutdown flushes.
+		self._pending_lock = threading.Lock()
 
 		# Primary topic
 		self.topic = (self.config or {}).get(SONADOR_CONF_KAFKA_TOPIC)
@@ -96,25 +103,117 @@ class SonadorProducer:
 		timer.daemon = True
 		timer.start()
 
+	def _produce(self, topic, msg):
+		self.producer.produce(topic, msg,
+			callback=lambda err, m: self.delivery_report(err, m))
+
 	def send_msg(self, msg, topic=None, callback=None):
 		'''	Send message to the provided topic, defaut topic for the producer is used
 			if no topic is specified.
-		'''
-		self.producer.produce(topic or self.topic, msg,
-			callback=lambda err,msg: self.delivery_report(err, msg))
 
+			A message the local producer queue refuses synchronously (a full queue raises
+			BufferError; librdkafka may raise for other transient reasons) is retained and
+			re-enqueued from `poll()` / `flush()` rather than raised to the caller, so a request
+			whose database work has already committed is not answered as a failure.
+
+			@returns bool: True when the message was handed to the producer, False when retained
+		'''
+		topic = topic or self.topic
+
+		try:
+			self._produce(topic, msg)
+			return True
+
+		except Exception as err:
+			self.retain(topic, msg, err)
+			return False
+
+	def retain(self, topic, msg, err=None):
+		'''	Keep a message whose enqueue failed, for a later `retry_pending()`. The oldest
+			retained message is dropped, and logged with its payload, once the bound is reached.
+		'''
+		with self._pending_lock:
+			if len(self.pending) >= self.pending_max_messages:
+				dropped_topic, dropped_msg = self.pending.popleft()
+				logger.error('Kafka retention bound (%s) reached; dropping oldest message for topic "%s":\n%s'
+					% (self.pending_max_messages, dropped_topic, dropped_msg))
+
+			self.pending.append((topic, msg))
+			retained = len(self.pending)
+
+		logger.error('Unable to enqueue Kafka message for topic "%s"; retained for retry (%s pending). Error: %s\n%s'
+			% (topic, retained, err, msg))
+
+	def retry_pending(self):
+		'''	Re-enqueue retained messages in order, stopping at the first the producer still refuses.
+
+			@returns int: number of messages still retained
+		'''
+		while True:
+			# Selection, enqueue and removal happen under one hold of the lock, so a concurrent
+			# retain() (and its bounded eviction) can only run between items and never removes the
+			# item this loop is handing to the producer. produce() only enqueues locally.
+			with self._pending_lock:
+				if not self.pending:
+					return 0
+
+				topic, msg = self.pending[0]
+
+				try:
+					self._produce(topic, msg)
+				except Exception as err:
+					logger.warning('Kafka producer still refusing retained message for topic "%s" (%s pending). Error: %s'
+						% (topic, len(self.pending), err))
+					return len(self.pending)
+
+				self.pending.popleft()
 
 	def poll(self, *args, **kwargs):
-		return self.producer.poll(*args, **kwargs)
+		'''	Service delivery reports, then re-enqueue anything retained. Polling first is what frees
+			queue space after a BufferError.
+		'''
+		result = self.producer.poll(*args, **kwargs)
+		self.retry_pending()
 
-	def flush(self, *args, **kwargs):
-		'''	Block until every message queued locally has been delivered or finally failed.
+		return result
+
+	def flush(self, timeout=None):
+		'''	Block until every message queued locally has been delivered or finally failed,
+			including messages held in retention.
 
 			Called from the ORTHANC_STOPPED callback, which is the only place blocking on the
-			broker is acceptable. Without this passthrough that callback raises AttributeError
-			and every queued message is dropped on shutdown.
+			broker is acceptable. Retained messages are re-enqueued and flushed in cycles until
+			both queues are empty, the producer keeps refusing, or `timeout` (seconds, whole
+			operation) is exhausted.
+
+			@returns int: messages still outstanding, in the producer queue plus in retention
 		'''
-		return self.producer.flush(*args, **kwargs)
+		deadline = None if timeout is None else time.monotonic() + timeout
+
+		def _flush_producer():
+			if deadline is None:
+				return self.producer.flush()
+
+			return self.producer.flush(max(0.0, deadline - time.monotonic()))
+
+		self.retry_pending()
+		outstanding = _flush_producer()
+
+		while self.pending:
+			if deadline is not None and time.monotonic() >= deadline:
+				break
+
+			before = len(self.pending)
+			self.retry_pending()
+
+			if len(self.pending) == before:
+				# The producer refused even the head of the queue with an empty local queue
+				# behind it; another cycle would not change that.
+				break
+
+			outstanding = _flush_producer()
+
+		return outstanding + len(self.pending)
 
 class KafkaMixin:
 	''' Mixin class that initializes the Kafka context for a web view. Provides
@@ -165,10 +264,27 @@ class KafkaMixin:
 			@returns dict / JSON object: copy of the message payload sent to Kafka
 		'''
 		_kafka = self.fetch_kafka_data(*args, **kwargs)
-		self.sonador_manager.kafka_producer.send_msg(
-			json.dumps(_kafka, cls=self.json_cls), topic=self.kafka_topic)
+		return self.publish_kafka_data(_kafka)
 
-		return _kafka
+	def publish_kafka_data(self, data):
+		'''	Serialize and send an already-assembled message payload to the view's Kafka topic.
+
+			Never raises: the callers publish after their database work has committed, and a
+			publication problem must not turn a committed operation into an error response. The
+			producer retains a message it could not enqueue; anything else is logged with the
+			payload so it can be replayed.
+
+			@returns dict / JSON object: the payload, or None when it could not be handed to the producer
+		'''
+		try:
+			payload = json.dumps(data, cls=self.json_cls)
+			self.sonador_manager.kafka_producer.send_msg(payload, topic=self.kafka_topic)
+			return data
+
+		except Exception as err:
+			logger.error('Unable to publish Kafka message for topic "%s". Error: %s\nPayload: %r'
+				% (self.kafka_topic, err, data))
+			return None
 
 	@abc.abstractmethod
 	def fetch_kafka_data(self, *args, **kwargs):
