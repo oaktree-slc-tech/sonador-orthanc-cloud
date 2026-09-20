@@ -106,6 +106,11 @@ SONADOR_KAFKA_REQUEST_DATA = 'RequestData'
 KAFKA_DELIVERY_MAX_ATTEMPTS = 3
 KAFKA_DELIVERY_RETRY_BACKOFF = 2.0
 
+# Upper bound on messages retained in memory when the local producer queue refuses them
+# (BufferError). Retained messages are re-enqueued from the scheduled poll; beyond this bound the
+# oldest is dropped and logged with its payload.
+KAFKA_PENDING_MAX_MESSAGES = 1000
+
 
 # Kafka Transport Security -- Orthanc Configuration Keys
 #
@@ -213,6 +218,16 @@ SONADOR_KAFKA_OPCODE_PUSH_IMAGE = 'kafka-export.instance'
 SONADOR_KAFKA_OPCODE_PUSH_WORKLIST = 'kafka-export.study-worklist'
 SONADOR_KAFKA_OPCODE_PUSH_STUDY_COMMENT = 'kafka-export.study-comment'
 SONADOR_KAFKA_OPCODE_PUSH_SERIES_COMMENT = 'kafka-export.series-comment'
+
+# Event opcodes attached to messages the plugin publishes on its own (not on-demand pushes).
+# Create and update messages carry no opcode; a removal must be distinguishable from them
+# because the comment it describes no longer exists.
+SONADOR_KAFKA_OPCODE_REMOVE_STUDY_COMMENT = 'comment-remove.study'
+SONADOR_KAFKA_OPCODE_REMOVE_SERIES_COMMENT = 'comment-remove.series'
+
+# Message key carrying the profile of the user whose request removed the object. Distinct from
+# `User`, which on a comment message is the comment's author.
+SONADOR_KAFKA_REMOVED_BY = 'RemovedBy'
 
 
 
