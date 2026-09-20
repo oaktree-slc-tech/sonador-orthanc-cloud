@@ -307,10 +307,14 @@ def orthanc_auth_resourcejson(auth, attrs=sonador_api.SONADOR_ACL_ATTRS_DEFAULT,
 		if v is not None:
 			_adata[k] = v
 
-	if user:
-		_adata['User'] = pick(user, user_attrs)
-	elif group:
-		_adata['Group'] = pick(group, group_attrs)
+	# The policy's principal is always named, at least by id: clients match and update policies by
+	# it, and a principal Sonador can no longer resolve (a deleted group, say) must still be shown
+	# and removable.
+	principal_attr = auth.principal_foreignkey_attr
+	principal_key = 'User' if principal_attr == 'user' else 'Group'
+	principal, principal_attrs = (user, user_attrs) if principal_attr == 'user' else (group, group_attrs)
+
+	_adata[principal_key] = pick(principal, principal_attrs) if principal else { 'id': getattr(auth, principal_attr) }
 
 	# Timestamps
 	_adata['Created'] = auth.ctime
