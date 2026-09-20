@@ -73,11 +73,58 @@ class UserContextMixin:
 		self.groups = SonadorGroupCollection(_iserver, self.user._objectdata.get('groups', []))
 
 
+def _lookup_principals(iserver, uids, execute, kind):
+	'''	Resolve Sonador users or groups by id through `execute(iserver, uids)`, which returns a
+		collection. The bulk lookup is tried first; if Sonador refuses it, each id is looked up on its
+		own so one id Sonador no longer knows (a deleted group whose policies still exist, for
+		instance) does not leave every other principal unresolved. Ids that cannot be resolved are
+		logged and left out.
+
+		@returns collection or None when nothing could be resolved
+	'''
+	uids = list(uids)
+
+	def _refused(err):
+		# Sonador answers 400 when an id is not one it knows. Anything else (Sonador unreachable, a
+		# credential problem) is not about the ids and is raised, so the request fails instead of
+		# silently describing nobody.
+		status = getattr(err, 'http_code', None) or (getattr(err, 'details', None) or {}).get('status-code')
+		if status != 400:
+			raise err
+
+	try:
+		return execute(iserver, uids)
+	except ClientOperationError as err:
+		_refused(err)
+		logger.warning('Bulk %s lookup for ids=%s refused by Sonador (%s); resolving individually. Server response: %s'
+			% (kind, uids, err, soandor_clientexception_server_errors(err)))
+
+	collection = None
+	unresolved = []
+
+	for uid in uids:
+		try:
+			part = execute(iserver, [uid])
+		except ClientOperationError as err:
+			_refused(err)
+			unresolved.append(uid)
+			continue
+
+		if collection is None:
+			collection = part
+		else:
+			collection.extend(part)
+
+	if unresolved:
+		logger.error('Unable to retrieve %s data for ids=%s: not known to Sonador (removed from Sonador after '
+			'policies were granted).' % (kind, unresolved))
+
+	return collection
+
+
 class UserLookupBaseMixin(abc.ABC):
 	'''	Mixin class whcih providces methods to lookup user instances
 	'''
-	user_lookup_error_template = 'Unable to retrieve user data for user-ids="%s". Error: "%s".\nServer Response: "%s"\n%s'
-
 	@abc.abstractmethod
 	def _execute_user_lookup(self, user_uids):
 		'''	Execute lookup for the provided UIDs
@@ -87,18 +134,7 @@ class UserLookupBaseMixin(abc.ABC):
 		'''	Lookup user data for the provided user UIDs
 		'''
 		_iserver = self.sonador_manager.get_internal_imageserver()
-		user_collection = None
-
-		# Attempt to retrieve user data for the specified IDs
-		try: user_collection = self._execute_user_lookup(_iserver, user_uids)
-		except ClientOperationError as err:
-			server_errors = soandor_clientexception_server_errors(err)
-
-			logger.error(self.user_lookup_error_template % (
-				user_uids, err, server_errors, traceback.format_exc(),
-			))
-
-		return user_collection
+		return _lookup_principals(_iserver, user_uids, self._execute_user_lookup, 'user')
 
 
 class UserLookupMixin(UserLookupBaseMixin):
@@ -120,8 +156,6 @@ class AdminUserLookupMixin(UserLookupBaseMixin):
 class GroupLookupBaseMixin(abc.ABC):
 	'''	Mixin class whcih providces methods to lookup user instances
 	'''
-	group_lookup_error_template = 'Unable to retrieve group data for group-ids="%s". Error: "%s".\nServer Response: "%s"\n%s'
-
 	@abc.abstractmethod
 	def _execute_group_lookup(self, iserver, group_uids):
 		'''	Execute lookup for the provided UIDs
@@ -131,18 +165,7 @@ class GroupLookupBaseMixin(abc.ABC):
 		'''	Lookup group data for the provided UIDs
 		'''
 		_iserver = self.sonador_manager.get_internal_imageserver()
-		group_collection = None
-
-		# Attempt to retrieve group data for the specified IDs
-		try: group_collection = self._execute_group_lookup(_iserver, list(group_uids))
-		except ClientOperationError as err:
-			server_errors = soandor_clientexception_server_errors(err)
-
-			logger.error(self.group_lookup_error_template % (
-				group_uids, err, server_errors, traceback.format_exc()
-			))
-
-		return group_collection
+		return _lookup_principals(_iserver, group_uids, self._execute_group_lookup, 'group')
 
 
 class GroupLookupMixin(GroupLookupBaseMixin):
