@@ -105,6 +105,8 @@ ORTHANC_SQLENGINE, OrthancSession = init_postgresdb_conn(CONF_POSTGRESQL)
 def orthanc_db_onstart(changeType, level, resource):
 	'''	Initialize database tables and AutoDb tables after server startup
 	'''
+	import sonador_orthanc.db.displayattr
+
 	DbBase.metadata.create_all(bind=ORTHANC_SQLENGINE, checkfirst=True)
 	AutoDbBase.prepare(autoload_with=ORTHANC_SQLENGINE)
 
@@ -232,6 +234,16 @@ def orthanc_cache_onstart(changeType, level, resource):
 		TagItemManagementView.as_view(sessionmaker=OrthancSession, sonador_manager=ORTHANC_SONADOR_MANAGER))
 	orthanc.RegisterRestCallback(r'/groups/[0-9]+/tags/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
 		TagItemRestView.as_view(sessionmaker=OrthancSession, sonador_manager=ORTHANC_SONADOR_MANAGER))
+
+	# Display Attributes (overlay attributes curated per group)
+	from sonador_orthanc.web.displayattr import DisplayAttributeManagementView, DisplayAttributeRestView, DisplayAttributeAggregateView
+
+	orthanc.RegisterRestCallback(r'/groups/[0-9]+/display-attributes',
+		DisplayAttributeManagementView.as_view(sessionmaker=OrthancSession, sonador_manager=ORTHANC_SONADOR_MANAGER))
+	orthanc.RegisterRestCallback(r'/groups/[0-9]+/display-attributes/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
+		DisplayAttributeRestView.as_view(sessionmaker=OrthancSession, sonador_manager=ORTHANC_SONADOR_MANAGER))
+	orthanc.RegisterRestCallback(r'/display-attributes',
+		DisplayAttributeAggregateView.as_view(sessionmaker=OrthancSession, sonador_manager=ORTHANC_SONADOR_MANAGER))
 
 	
 	# Sonador authentication and access control endpoints

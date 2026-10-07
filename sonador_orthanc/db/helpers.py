@@ -257,6 +257,45 @@ def orthanc_tagjson(tag, group=None, group_attrs=sonador_api.SONADOR_GROUP_ATTRS
 	return _json
 
 
+DCM_CODE_HEX_RE = re.compile(r'^[0-9A-F]{8}$')
+
+
+def normalize_dcm_code(value, sep=','):
+	'''	Canonical `GGGG,EEEE` form of a DICOM tag code. Accepts `0018,1030`, `(0018,1030)`,
+		`00181030` and `x00181030` in any case.
+
+		@raises ValueError when the value is not a tag code
+	'''
+	if not isinstance(value, str):
+		raise ValueError('Invalid DICOM tag code: %r' % (value,))
+
+	hexcode = re.sub(r'^[xX]', '', value.strip())
+	hexcode = re.sub(r'[\s(),]', '', hexcode).upper()
+	if not DCM_CODE_HEX_RE.match(hexcode):
+		raise ValueError('Invalid DICOM tag code: %r' % (value,))
+
+	return '%s%s%s' % (hexcode[:4], sep, hexcode[4:])
+
+
+def orthanc_displayattrjson(tag, group=None, group_attrs=sonador_api.SONADOR_GROUP_ATTRS_DEFAULT):
+	'''	Create Orthanc JSON structure for a group's display attribute.
+	'''
+	_json = {
+		'ID': tag.uid,
+		'Created': tag.ctime,
+		IMAGING_SERVER_MODIFIED: tag.mtime,
+		'Code': tag.code,
+		'Tag': tag.keyword,
+		'Label': tag.label,
+		'Private': bool(tag.private),
+	}
+
+	if group is not None:
+		_json['Group'] = pick(group, group_attrs)
+
+	return _json
+
+
 def orthanc_worklist_studyjson(worklist, user=None, user_attrs=sonador_api.SONADOR_USER_ATTRS_DEFAULT, 
 		group=None, group_attrs=sonador_api.SONADOR_GROUP_ATTRS_DEFAULT):
 	'''	Create Orthanc JSONn structure for the provided worklist assigned to study.
