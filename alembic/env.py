@@ -69,6 +69,7 @@ config.set_main_option('sqlalchemy.url', SQL_CONNSTR.replace('%', '%%'))
 # Sonador/Orthanc Alembic Managed Models
 from sonador_orthanc.db.base import DbBase
 from sonador_orthanc.db.worklist import ProcedureStep
+from sonador_orthanc.db.displayattr import DisplayAttribute
 
 # for 'autogenerate' support
 # from myapp import mymodel

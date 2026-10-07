@@ -176,6 +176,67 @@ DCMTAG_OPTIONS = {
 }
 
 
+def dcm_tagdata(sonador_manager, dcmtag):
+	'''	Catalogue entry for one tag code: `{ code, tag, label, private, vr: { code, name? }, options? }`,
+		or None when the server's tag dictionary does not know the code.
+	'''
+	_tag = sonador_manager.tags.code2def(dcmtag)
+	if _tag is None:
+		return None
+
+	_tagdef = {
+		'code': ','.join(_tag.hex), 'tag': _tag.header, 'label': dcm_tag2label(_tag.header),
+		'private': _tag.private, 'vr': { 'code': _tag.dtype },
+	}
+
+	if DICOM_VR_DESCRIPTION.get(_tag.dtype):
+		_tagdef['vr']['name'] = DICOM_VR_DESCRIPTION.get(_tag.dtype).name
+
+	if DCMTAG_OPTIONS.get(_tag.header):
+		_tagdef['options'] = DCMTAG_OPTIONS.get(_tag.header)
+
+	return _tagdef
+
+
+def build_dcmtag_catalogue(sonador_manager):
+	'''	The tag catalogue served by `/cache/dcm-tags`: `{ Level: { 'GGGG,EEEE': tagdef } }` from the
+		server's MainDicomTags and PrivateMainDicomTags. Unknown or empty codes are skipped.
+	'''
+	sconfig = sonador_manager.get_internal_imageserver().system_info()
+	dcmtags = {}
+
+	for rtype, rtags in (sconfig.get('MainDicomTags') or {}).items():
+		dcmtags[rtype] = {}
+		for dcmcode in (rtags or '').split(';'):
+			_tagdef = dcm_tagdata(sonador_manager, dcmcode) if dcmcode.strip() else None
+			if _tagdef:
+				dcmtags[rtype][dcmcode] = _tagdef
+			elif dcmcode.strip():
+				logger.warning('Skipping unknown %s main DICOM tag "%s"' % (rtype, dcmcode))
+
+	for rtype, rtags in (sconfig.get(SONADOR_CONF_PRIVATE_TAGS) or {}).items():
+		for dcmcode in (rtags or '').split(';'):
+			_tagdef = dcm_tagdata(sonador_manager, dcmcode) if dcmcode.strip() else None
+			if _tagdef:
+				dcmtags.setdefault(rtype, {})[dcmcode] = _tagdef
+			elif dcmcode.strip():
+				logger.warning('Skipping unknown %s private DICOM tag "%s"' % (rtype, dcmcode))
+
+	return dcmtags
+
+
+def catalogue_tagdef(catalogue, code):
+	'''	The catalogue entry whose code matches `code` (canonical `GGGG,EEEE`), at any level
+	'''
+	code = (code or '').upper()
+	for level in (catalogue or {}).values():
+		for key, tagdef in (level or {}).items():
+			if (tagdef.get('code') or key or '').upper() == code:
+				return tagdef
+
+	return None
+
+
 class SonadorOrthancDicomTagsView(OrthancBaseView):
 	'''	Retrieve the list of DICOM tags and value representations currently configured for the Orthanc server.
 		Tag data is split by the resource type (Patient, Study, Series, Instance) and keyed to the DICOM hexadecimal code.
@@ -232,42 +293,9 @@ class SonadorOrthancDicomTagsView(OrthancBaseView):
 	def dcm_tagdata(self, dcmtag, sep=','):
 		'''	Retrieve data for the provided tag
 		'''
-		_tag = self.sonador_manager.tags.code2def(dcmtag)
-
-		
-		# Tag details
-		_tagdef =  {
-			'code': ','.join(_tag.hex), 'tag': _tag.header, 'label': dcm_tag2label(_tag.header), 
-			'private': _tag.private, 'vr': { 'code':  _tag.dtype },
-		}
-
-		# Add VR type
-		if DICOM_VR_DESCRIPTION.get(_tag.dtype):
-			_tagdef['vr']['name'] = DICOM_VR_DESCRIPTION.get(_tag.dtype).name
-
-		# Add options
-		if DCMTAG_OPTIONS.get(_tag.header):
-			_tagdef['options'] = DCMTAG_OPTIONS.get(_tag.header)
-
-		return _tagdef
+		return dcm_tagdata(self.sonador_manager, dcmtag)
 
 	def get(self, output, uri, request, *args, **kwargs):
 		'''	Retrieve system configuration and create VR map of available tags.
 		'''
-		# Retrieve tags configuredin the main DICOM tags cache
-		sconfig = self.sonador_manager.get_internal_imageserver().system_info()
-		dcmtags = sconfig.get('MainDicomTags', {})
-
-		for rtype,rtags in dcmtags.items():
-			dcmtags[rtype] = dict((dcmtag, self.dcm_tagdata(dcmtag)) for dcmtag in rtags.split(';'))
-
-		private_dcmtags = sconfig.get(SONADOR_CONF_PRIVATE_TAGS, {})
-		for rtype, rtags in private_dcmtags.items():
-			for dcmcode in rtags.split(';'):
-
-				# Retrieve tag definition and add to the response
-				_ptagdef = self.dcm_tagdata(dcmcode)
-				if _ptagdef:
-					dcmtags[rtype][dcmcode]	= _ptagdef
-
-		return self.send_response(json.dumps(dcmtags, cls=SonadorJsonEncoder))
+		return self.send_response(json.dumps(build_dcmtag_catalogue(self.sonador_manager), cls=SonadorJsonEncoder))
