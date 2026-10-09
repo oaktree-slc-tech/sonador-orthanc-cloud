@@ -11,7 +11,7 @@ from .. import apisettings as sonador_api
 from ..db.helpers import normalize_dcm_code
 from ..web.system import build_dcmtag_catalogue, catalogue_tagdef
 
-from .base import OrthancBaseModelform
+from .base import OrthancBaseModelform, SonadorPolicyValidationMixin
 
 
 def _validation_error(code, field, value, msg):
@@ -28,7 +28,7 @@ def duplicate_code_error(raw_code, code, group):
 		'Tag "%s" is already part of the collection for group "%s"' % (code, group.name))
 
 
-class DisplayAttributeValidationForm(OrthancBaseModelform):
+class DisplayAttributeValidationForm(SonadorPolicyValidationMixin, OrthancBaseModelform):
 	'''	Form for validating a group's display attribute. `Code` must name a tag the imaging
 		server indexes; `Tag` (keyword) and `Private` are filled from the catalogue, never from the
 		request.
@@ -49,6 +49,10 @@ class DisplayAttributeValidationForm(OrthancBaseModelform):
 		'sonador_manager', 'session', 'create', 'update', 'model', 'obj', 'group',
 		'request_user', 'request_user_groups')
 
+	policy_feature: ClassVar[str] = 'display_attr'
+	policy_feature_label: ClassVar[str] = 'Display attributes'
+	policy_staff_manages: ClassVar[bool] = True
+
 	@classmethod
 	def clean(cls, *args, **kwargs):
 		'''	Normalise the tag code, require it in the server's catalogue, refuse duplicates within
@@ -68,6 +72,8 @@ class DisplayAttributeValidationForm(OrthancBaseModelform):
 			raise ConfigurationError('Unable to validate display attribute, no model class provided')
 		if group is None:
 			raise ConfigurationError('Unable to validate display attribute, no group provided')
+
+		cls.validate_policy_write(sonador_manager, group, kwargs.get('request_user'), kwargs.get('request_user_groups'))
 
 		raw_code = kwargs.get('Code')
 		try:

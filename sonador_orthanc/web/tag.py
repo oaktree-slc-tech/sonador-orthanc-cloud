@@ -40,6 +40,15 @@ class TagItemManagementView(TagJsonMixin, UserContextMixin, GroupChildManagement
 	model = ImagingTag
 	modelform = TagValidationForm
 
+	def modelform_kwargs(self, *args, **kwargs):
+		'''	Add the request user to the form so the policy write rule can be applied
+		'''
+		form_kwargs = super().modelform_kwargs(*args, **kwargs)
+		if getattr(self, 'user', None) is None:
+			self.init_user_context(self.request, *args, **kwargs)
+		form_kwargs.update({ 'request_user': self.user, 'request_user_groups': getattr(self, 'groups', None) })
+		return form_kwargs
+
 	def get_response_headers(self, response, status_code, method, *args, **kwargs):
 		'''	Add operation and permissions headers to collection (GET) requests
 		'''
@@ -53,11 +62,9 @@ class TagItemManagementView(TagJsonMixin, UserContextMixin, GroupChildManagement
 			_user, _group = self.user, self.get_group(*args, **kwargs)
 			_group_acl = self.sonador_manager.get_internal_imageserver().fetch_acl().get_group_acl(_group.pk)
 
-			# Add Tag Group Permissions
-			headers[sonador_api.SONADOR_PERMISSIONS_HEADER] = json.dumps({
-				'tag': _group_acl.tag or _user.is_superuser,
-				'tag_modify': _group_acl.tag_modify or _user.is_superuser,
-			}, cls=SonadorJsonEncoder)
+			# Add Tag Group Permissions, as the write rule on the form enforces them
+			headers[sonador_api.SONADOR_PERMISSIONS_HEADER] = json.dumps(
+				TagValidationForm.policy_permissions(_group_acl, _user), cls=SonadorJsonEncoder)
 
 			# Ensure that the headers are visible in the response
 			# Ensure that the headers are visible in the response
@@ -72,11 +79,28 @@ class TagItemManagementView(TagJsonMixin, UserContextMixin, GroupChildManagement
 		return headers
 
 
-class TagItemRestView(TagJsonMixin, GroupChildBaseRestView):
+class TagItemRestView(TagJsonMixin, UserContextMixin, GroupChildBaseRestView):
 	'''	REST endpoint which can be used to retrieve details for, update, and delete series reviewer worklist items
 	'''
 	model = ImagingTag
 	modelform = TagValidationForm
+
+	def modelform_kwargs(self, **kwargs):
+		'''	Add the request user to the form so the policy write rule can be applied
+		'''
+		form_kwargs = super().modelform_kwargs(**kwargs)
+		if getattr(self, 'user', None) is None:
+			self.init_user_context(self.request, **kwargs)
+		form_kwargs.update({ 'request_user': self.user, 'request_user_groups': getattr(self, 'groups', None) })
+		return form_kwargs
+
+	def validate_delete(self, session, obj, *args, **kwargs):
+		'''	Removal follows the same policy rule as a create or update
+		'''
+		if getattr(self, 'user', None) is None:
+			self.init_user_context(self.request, *args, **kwargs)
+		self.modelform.validate_policy_write(self.sonador_manager, self.get_group(*args, **kwargs),
+			self.user, getattr(self, 'groups', None))
 
 	def err_404(self, err, *args, **kwargs):
 		'''	Create 404 error message which includes the UID of the group

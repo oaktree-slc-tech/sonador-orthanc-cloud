@@ -25,15 +25,12 @@ from .base import OrthancBaseView
 
 def display_attr_permissions(acl, user):
 	'''	Display Attributes permission flags (`display_attr` / `display_attr_modify`) for a user on one
-		group policy. Superusers manage every collection, staff every enabled one; `acl` may be None
-		for a group without a policy.
+		group policy, as the write rule on the form enforces them: nobody manages a collection whose
+		policy does not enable display attributes; with it enabled, members need the modify flag and
+		staff and superusers do not (Sonador's staff rule for this feature). `acl` may be None for a
+		group without a policy.
 	'''
-	enabled = bool(getattr(acl, 'display_attr', False))
-	manage = bool(getattr(acl, 'display_attr_modify', False)) \
-		or bool(getattr(user, 'is_superuser', False)) or (enabled and bool(getattr(user, 'is_staff', False)))
-	read = enabled or manage
-
-	return { 'display_attr': read, 'display_attr_modify': manage }
+	return DisplayAttributeValidationForm.policy_permissions(acl, user)
 
 
 def expose_header(headers, name):
@@ -95,6 +92,15 @@ class DisplayAttributeManagementView(DisplayAttributeJsonMixin, DisplayAttribute
 	model = DisplayAttribute
 	modelform = DisplayAttributeValidationForm
 
+	def modelform_kwargs(self, *args, **kwargs):
+		'''	Add the request user to the form so the policy write rule can be applied
+		'''
+		form_kwargs = super().modelform_kwargs(*args, **kwargs)
+		if getattr(self, 'user', None) is None:
+			self.init_user_context(self.request, *args, **kwargs)
+		form_kwargs.update({ 'request_user': self.user, 'request_user_groups': getattr(self, 'groups', None) })
+		return form_kwargs
+
 	def save_object_data(self, session, form_instance, *args, **kwargs):
 		'''	Persist the attribute. The form's duplicate check runs before the insert, so two
 			concurrent creates of the same code can both pass it; the unique constraint on
@@ -127,13 +133,30 @@ class DisplayAttributeRestView(DisplayAttributeJsonMixin, UserContextMixin, Grou
 
 		return obj
 
+	def modelform_kwargs(self, **kwargs):
+		'''	Add the request user to the form so the policy write rule can be applied
+		'''
+		form_kwargs = super().modelform_kwargs(**kwargs)
+		if getattr(self, 'user', None) is None:
+			self.init_user_context(self.request, **kwargs)
+		form_kwargs.update({ 'request_user': self.user, 'request_user_groups': getattr(self, 'groups', None) })
+		return form_kwargs
+
+	def validate_delete(self, session, obj, *args, **kwargs):
+		'''	Removal follows the same policy rule as a create or update
+		'''
+		if getattr(self, 'user', None) is None:
+			self.init_user_context(self.request, *args, **kwargs)
+		self.modelform.validate_policy_write(self.sonador_manager, self.get_group(*args, **kwargs),
+			self.user, getattr(self, 'groups', None))
+
 
 class DisplayAttributeAggregateView(UserContextMixin, GroupLookupMixin, OrthancBaseView):
 	'''	GET /display-attributes: the groups whose display attributes the requesting user may use,
 		and the de-duplicated union of those collections.
 
-		Members see the groups whose policy grants `display_attr` or `display_attr_modify`; staff see
-		every group whose policy enables display attributes and superusers every policy group, all
+		Members see the groups whose policy enables display attributes, manageable when it also
+		carries the modify flag; staff and superusers see every group whose policy enables them, all
 		manageable. When two groups define the same code, the entry of the group whose name sorts
 		first is kept.
 	'''
@@ -154,9 +177,10 @@ class DisplayAttributeAggregateView(UserContextMixin, GroupLookupMixin, OrthancB
 		acl = self.sonador_manager.get_internal_imageserver().fetch_acl()
 		user = self.user
 
+		# Staff and superusers: every group whose policy enables display attributes, all manageable.
+		# A disabled policy is out of scope for them too, since no write on it is allowed.
 		if getattr(user, 'is_superuser', False) or getattr(user, 'is_staff', False):
-			pks = sorted(set(int(policy.group) for policy in acl
-				if getattr(user, 'is_superuser', False) or getattr(policy, 'display_attr', False)))
+			pks = sorted(set(int(policy.group) for policy in acl if getattr(policy, 'display_attr', False)))
 			groups = [{ 'id': g.pk, 'name': g.name, 'manage': True } for g in (self.sonador_group_lookup(pks) if pks else [])]
 
 		else:
