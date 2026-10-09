@@ -56,7 +56,9 @@ class Session:
 		return Query(self.rows)
 
 	def add(self, obj):
-		self.rows.append(obj)
+		# A re-added instance stays listed once, as in a real session
+		if obj not in self.rows:
+			self.rows.append(obj)
 
 	def commit(self):
 		pass
@@ -160,9 +162,16 @@ def test_displayattrjson_shape():
 
 # Validation form
 
+ENABLED_POLICIES = [
+	{ 'group': 5, 'display_attr': True, 'display_attr_modify': True },
+	{ 'group': 6, 'display_attr': True, 'display_attr_modify': True },
+]
+
+
 def form_kwargs(session=None, obj=None, **extra):
-	return { 'sonador_manager': manager([]), 'session': session if session is not None else Session(), 'model': DisplayAttribute,
-		'group': group(5, 'readers'), 'create': obj is None, 'update': obj is not None, 'obj': obj, **extra }
+	return { 'sonador_manager': manager(ENABLED_POLICIES), 'session': session if session is not None else Session(), 'model': DisplayAttribute,
+		'group': group(5, 'readers'), 'create': obj is None, 'update': obj is not None, 'obj': obj,
+		'request_user': user(groups=[(5, 'readers'), (6, 'curators')]), **extra }
 
 
 def test_form_normalises_and_fills_from_catalogue():
@@ -234,7 +243,12 @@ def test_form_saves_through_the_fieldmap():
 	(None, { 'is_staff': True }, (False, False)),
 	({ 'group': 5 }, { 'is_staff': True }, (False, False)),
 	({ 'group': 5, 'display_attr': True }, { 'is_staff': True }, (True, True)),
-	(None, { 'is_superuser': True }, (True, True)),
+	({ 'group': 5, 'display_attr': True }, { 'is_superuser': True }, (True, True)),
+	# Disabled on the policy: readable by a superuser, manageable by nobody
+	({ 'group': 5, 'display_attr': False, 'display_attr_modify': True }, {}, (False, False)),
+	({ 'group': 5, 'display_attr': False, 'display_attr_modify': True }, { 'is_staff': True }, (False, False)),
+	({ 'group': 5, 'display_attr': False, 'display_attr_modify': True }, { 'is_superuser': True }, (True, False)),
+	(None, { 'is_superuser': True }, (True, False)),
 ])
 def test_display_attr_permissions(policy, flags, expected):
 	acl = types.SimpleNamespace(**policy) if policy else None
@@ -317,10 +331,12 @@ def test_staff_see_every_enabled_group_as_manageable():
 	assert data['tags'][1]['Group'] == { 'id': 6, 'name': 'curators' }
 
 
-def test_superuser_sees_every_policy_group():
-	status, data = aggregate(POLICIES, ROWS, user(is_superuser=True))
+def test_superuser_sees_every_enabled_group_as_manageable():
+	status, data = aggregate(POLICIES, ROWS, user(is_superuser=True), lookup={ 5: 'readers', 6: 'curators', 7: 'others' })
 
-	assert len(data['groups']) == 3 and all(g['manage'] for g in data['groups'])
+	# Group 7 has a policy without display attributes: not offered, since no write on it is allowed
+	assert [(g['id'], g['manage']) for g in data['groups']] == [(6, True), (5, True)]
+	assert [t['Code'] for t in data['tags']] == ['0008,1030', '0018,1030']
 
 
 # Concurrent creates: the precheck passes for both, the unique constraint refuses the loser
@@ -391,3 +407,166 @@ def test_overlapping_creates_store_one_row_and_answer_the_loser_with_the_duplica
 	third.post(third.output, third.uri, third.request)
 	assert third.output.status == 201
 	assert sorted(r.code for r in session.rows) == ['0008,1030', '0018,1030']
+
+
+
+# Policy write rule: the feature must be enabled on the group's policy; regular users also need
+# membership and the modify flag, staff and superusers do not
+
+def policy_error_user(err):
+	return [e['loc'] for e in err.value.errors()]
+
+
+@pytest.mark.parametrize('policy, requester, allowed', [
+	({ 'group': 5, 'display_attr': True, 'display_attr_modify': True }, user(groups=[(5, 'readers')]), True),
+	({ 'group': 5, 'display_attr': True, 'display_attr_modify': False }, user(groups=[(5, 'readers')]), False),
+	({ 'group': 5, 'display_attr': True, 'display_attr_modify': True }, user(groups=[(6, 'curators')]), False),
+	({ 'group': 5, 'display_attr': False, 'display_attr_modify': True }, user(groups=[(5, 'readers')]), False),
+	({ 'group': 5, 'display_attr': True, 'display_attr_modify': False }, user(is_staff=True), True),
+	({ 'group': 5, 'display_attr': True, 'display_attr_modify': False }, user(is_superuser=True), True),
+	({ 'group': 5, 'display_attr': False, 'display_attr_modify': True }, user(is_staff=True), False),
+	({ 'group': 5, 'display_attr': False, 'display_attr_modify': True }, user(is_superuser=True), False),
+	({ 'group': 5, 'display_attr': True, 'display_attr_modify': True }, None, False),
+])
+def test_form_applies_the_policy_write_rule(policy, requester, allowed):
+	kwargs = form_kwargs(sonador_manager=manager([policy]), request_user=requester)
+
+	if allowed:
+		assert DisplayAttributeValidationForm.clean(Code='0018,1030', **kwargs).Code == '0018,1030'
+	else:
+		with pytest.raises(PydanticValidationError) as err:
+			DisplayAttributeValidationForm.clean(Code='0018,1030', **kwargs)
+		assert policy_error_user(err) == [('User',)]
+
+
+def test_form_refuses_a_group_without_a_policy():
+	with pytest.raises(PydanticValidationError) as err:
+		DisplayAttributeValidationForm.clean(Code='0018,1030', **form_kwargs(sonador_manager=manager([]), request_user=user(is_superuser=True)))
+	assert policy_error_user(err) == [('User',)]
+	assert 'not enabled' in str(err.value)
+
+
+def test_update_applies_the_policy_write_rule():
+	existing = row('u1', 5, '0018,1030')
+	session = Session([existing])
+	disabled = manager([{ 'group': 5, 'display_attr': False, 'display_attr_modify': True }])
+
+	with pytest.raises(PydanticValidationError):
+		DisplayAttributeValidationForm.clean(Code='0018,1030', Label='Renamed',
+			**form_kwargs(session=session, obj=existing, sonador_manager=disabled, request_user=user(is_superuser=True)))
+
+
+def write_view(policies, requester, session, method, uri):
+	view = DisplayAttributeManagementView(sonador_manager=manager(policies), sessionmaker=lambda: session)
+	view.uri = uri
+	view.request = { 'method': method, 'headers': {}, 'get': {}, 'body': '' }
+	view.output = Output()
+	view.json_cls = json.JSONEncoder
+	view.group = group(5, 'readers')
+	view.user = requester
+	view.get_response_headers = lambda *a, **k: {}
+	return view
+
+
+def test_create_endpoint_answers_400_for_a_member_without_the_modify_flag():
+	session = Session()
+	view = write_view([{ 'group': 5, 'display_attr': True, 'display_attr_modify': False }], user(groups=[(5, 'readers')]), session,
+		'POST', '/groups/5/display-attributes')
+	view.POST = { 'Code': '0018,1030' }
+
+	view.post(view.output, view.uri, view.request)
+	body = json.loads(view.output.body)
+
+	assert view.output.status == 400
+	assert body['status'] == 'fail'
+	assert 'User' in body['errors']
+	assert session.rows == []
+
+
+def test_create_endpoint_answers_400_for_a_superuser_when_the_feature_is_disabled():
+	session = Session()
+	view = write_view([{ 'group': 5, 'display_attr': False, 'display_attr_modify': True }], user(is_superuser=True), session,
+		'POST', '/groups/5/display-attributes')
+	view.POST = { 'Code': '0018,1030' }
+
+	view.post(view.output, view.uri, view.request)
+
+	assert view.output.status == 400
+	assert 'not enabled' in json.loads(view.output.body)['errors']['User'][0]['message']
+	assert session.rows == []
+
+
+def test_create_endpoint_stores_for_staff_when_the_feature_is_enabled():
+	session = Session()
+	view = write_view([{ 'group': 5, 'display_attr': True, 'display_attr_modify': False }], user(is_staff=True), session,
+		'POST', '/groups/5/display-attributes')
+	view.POST = { 'Code': '0018,1030' }
+
+	view.post(view.output, view.uri, view.request)
+
+	assert view.output.status == 201
+	assert [r.code for r in session.rows] == ['0018,1030']
+
+
+def rest_view(policies, requester, session, method, uid):
+	from sonador_orthanc.web.displayattr import DisplayAttributeRestView
+
+	view = DisplayAttributeRestView(sonador_manager=manager(policies), sessionmaker=lambda: session)
+	view.uri = '/groups/5/display-attributes/%s' % uid
+	view.request = { 'method': method, 'headers': {}, 'get': {}, 'body': '' }
+	view.output = Output()
+	view.json_cls = json.JSONEncoder
+	view.group = group(5, 'readers')
+	view.user = requester
+	view.get_response_headers = lambda *a, **k: {}
+	return view
+
+
+def test_delete_endpoint_applies_the_policy_write_rule():
+	existing = row('u1', 5, '0018,1030')
+	session = Session([existing])
+
+	refused = rest_view([{ 'group': 5, 'display_attr': True, 'display_attr_modify': False }], user(groups=[(5, 'readers')]), session, 'DELETE', 'u1')
+	refused.delete(refused.output, refused.uri, refused.request)
+	assert refused.output.status == 400
+	assert 'User' in json.loads(refused.output.body)['errors']
+	assert session.rows == [existing]
+
+	allowed = rest_view([{ 'group': 5, 'display_attr': True, 'display_attr_modify': True }], user(groups=[(5, 'readers')]), session, 'DELETE', 'u1')
+	allowed.delete(allowed.output, allowed.uri, allowed.request)
+	assert allowed.output.status == 200
+	assert session.rows == []
+
+
+# Reported permissions agree with the write rule
+
+@pytest.mark.parametrize('policy, requester', [
+	({ 'group': 5, 'display_attr': False, 'display_attr_modify': True }, user(is_superuser=True)),
+	({ 'group': 5, 'display_attr': False, 'display_attr_modify': True }, user(groups=[(5, 'readers')])),
+	({ 'group': 5, 'display_attr': True, 'display_attr_modify': False }, user(groups=[(5, 'readers')])),
+	({ 'group': 5, 'display_attr': True, 'display_attr_modify': True }, user(groups=[(5, 'readers')])),
+	({ 'group': 5, 'display_attr': True, 'display_attr_modify': False }, user(is_staff=True)),
+])
+def test_reported_manage_flag_matches_create_update_and_delete(policy, requester):
+	existing = row('u1', 5, '0008,1030', label='Kept')
+	session = Session([existing])
+	reported = display_attr_permissions(types.SimpleNamespace(**policy), requester)['display_attr_modify']
+
+	create = write_view([policy], requester, session, 'POST', '/groups/5/display-attributes')
+	create.POST = { 'Code': '0018,1030' }
+	create.post(create.output, create.uri, create.request)
+
+	update = rest_view([policy], requester, session, 'PUT', 'u1')
+	update.POST = { 'Code': '0008,1030', 'Label': 'Renamed' }
+	update.put(update.output, update.uri, update.request)
+
+	remove = rest_view([policy], requester, session, 'DELETE', 'u1')
+	remove.delete(remove.output, remove.uri, remove.request)
+
+	outcomes = (create.output.status, update.output.status, remove.output.status)
+	if reported:
+		assert outcomes == (201, 200, 200), outcomes
+		assert [r.code for r in session.rows] == ['0018,1030']
+	else:
+		assert outcomes == (400, 400, 400), outcomes
+		assert session.rows == [existing] and existing.label == 'Kept'
