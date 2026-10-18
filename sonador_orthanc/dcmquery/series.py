@@ -94,7 +94,7 @@ class CacheSeriesQueryMixin(object):
 			series_private_tagquery = self._series_querycondition_or(
 				dict((sxtag, allfields_queryfilter) for sxtag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_SERIES)),
 				privatetags=True, **kwargs)
-			series_tagquery |= series_private_tagquery
+			series_tagquery |= CacheSeries.privatetags.has(series_private_tagquery)
 
 		return dcm_resources.filter(patient_querycondition | study_querycondition | series_tagquery)
 

@@ -129,7 +129,7 @@ class CacheStudyQueryMixin(object):
 		# Study query condition
 		study_tagquery = self._study_querycondition_or(
 			dict((stag, allfields_queryfilter) for stag in self.cache_dicomtags.get(IMAGING_SERVER_RESOURCE_STUDY)
-				if not stag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY)),
+				if not stag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY, [])),
 			**kwargs)
 
 		if dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY):
@@ -138,7 +138,7 @@ class CacheStudyQueryMixin(object):
 			study_private_tagquery = self._study_querycondition_or(
 				dict((stag, allfields_queryfilter) for stag in dcm_privatetags.get(IMAGING_SERVER_RESOURCE_STUDY)),
 				privatetags=True, **kwargs)
-			study_tagquery |= study_private_tagquery
+			study_tagquery |= CacheStudy.privatetags.has(study_private_tagquery)
 
 		# Series query condition
 		series_tagquery = self._series_querycondition_or(
