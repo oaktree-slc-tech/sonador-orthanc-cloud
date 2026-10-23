@@ -1,6 +1,6 @@
 import datetime
 
-from typing import ClassVar
+from typing import ClassVar, Optional
 from pydantic import constr
 from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import InitErrorDetails, PydanticCustomError
@@ -16,6 +16,7 @@ from client.utils.object import gextend, omit
 from client.errors import ConfigurationError
 
 from .base import OrthancBaseModelform, SonadorGroupValidationMixin, SonadorPolicyValidationMixin
+from .display import DisplayMetaForm
 
 class TagValidationForm(SonadorPolicyValidationMixin, SonadorGroupValidationMixin, OrthancBaseModelform):
     ''' Form for validating the structure of device list entries
@@ -24,12 +25,14 @@ class TagValidationForm(SonadorPolicyValidationMixin, SonadorGroupValidationMixi
     Meaning: constr(strip_whitespace=True, min_length=1)
     SchemeDesignator: constr(strip_whitespace=True, min_length=1)
     SchemeVersion: constr(strip_whitespace=True) = None
+    Meta: Optional[DisplayMetaForm] = None
 
     db_fieldmap: ClassVar[dict] = {    
         'Value': 'value',
         'Meaning': 'meaning',
         'SchemeDesignator': 'scheme_designator',
         'SchemeVersion': 'scheme_version',
+        'Meta': 'meta',
     }
     
     clean_omit_kwargs: ClassVar[tuple] = ('sonador_manager', 'session', 'create', 'update', 'model', 'obj', 'group',
@@ -61,4 +64,22 @@ class TagValidationForm(SonadorPolicyValidationMixin, SonadorGroupValidationMixi
 
         cls.validate_policy_write(sonador_manager, group, kwargs.get('request_user'), kwargs.get('request_user_groups'))
 
+        # omit() drops None values; an explicit null clears the stored document
+        if 'Meta' in kwargs and kwargs['Meta'] is None:
+            kwargs['Meta'] = {}
+
         return super().clean(*args, **omit(kwargs, cls.clean_omit_kwargs))
+
+    def save(self, session, dbmodel, *args, commit=True, **kwargs):
+        ''' Persist the tag. A request which omits `Meta` keeps the stored document; an explicit
+            `null` clears it.
+        '''
+        stored_meta = dbmodel.meta
+        super().save(session, dbmodel, *args, commit=False, **kwargs)
+        dbmodel.meta = (self.Meta.to_json() if self.Meta else None) if 'Meta' in self.model_fields_set else stored_meta
+
+        if commit:
+            session.add(dbmodel)
+            session.commit()
+
+        return dbmodel

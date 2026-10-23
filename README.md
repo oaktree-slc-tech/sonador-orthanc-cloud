@@ -1,6 +1,16 @@
 # Sonador Orthanc Plugin
 
 
+### Dependencies
+The plugin's Python dependencies are listed in `requirements.txt`, including the [Sonador IO client](https://code.oak-tree.tech/oak-tree/medical-imaging/sonador-client) (`sonador`) from the Sonador package repository. The plugin requires the 0.4 IO line from 0.4.7 (`sonador>=0.4.7,<0.5`, pydicom 2), the first release with `sonador.apisettings.display_attrs`; IO's own runtime dependencies come from its package metadata.
+
+```bash
+pip install -r requirements.txt
+```
+
+For development against an unmerged IO revision, the local Docker stack mounts this repository into the container, and a `sonador` checkout at the repository root (ignored by git) is imported ahead of the installed package.
+
+
 ### Tests
 Unit tests live in `tests/` and cover the Kafka producer configuration builder — the protocol and
 credential matrix, every validation failure, and the log redaction of secrets.
@@ -62,8 +72,8 @@ librdkafka property each key maps to, and the validation rules are documented in
 Kafka](https://code.oak-tree.tech/oak-tree/medical-imaging/imaging-development-env/-/wikis/dev.kafka).
 
 
-### Databse Setup
-The Orthanc/Sonador plugin uses Alembic to manage a subset of tables which manage the resource cache, procedure worklists, user access controls, and the group-curated display attributes (`sonador_display_attribute`). These tables are separate from those managed by the PostgreSQL plugin of Orthanc and must be created by running an Alembic migration. Quickstart:
+### Database Setup
+The Orthanc/Sonador plugin uses Alembic to manage a subset of tables which manage the resource cache, procedure worklists, user access controls, group-curated display attributes (`sonador_display_attribute`), and Series Tags (`sonador_tag`, including each tag's `meta` display-attribute document). These tables are separate from those managed by the PostgreSQL plugin of Orthanc and must be created by running an Alembic migration. Quickstart:
 
 * (Production) Create an [init container (for Kubernetes)](https://kubernetes.io/docs/concepts/workloads/pods/init-containers/) to run the Alembic commands (see below).
 * (Development) Use `docker exec -it <container-name>` to launch a prompt within the container to run migration commands.

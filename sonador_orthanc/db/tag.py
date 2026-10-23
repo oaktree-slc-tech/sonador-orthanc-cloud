@@ -28,4 +28,7 @@ class ImagingTag(DbBase):
 	meaning = Column(SqlString(256))
 	scheme_designator = Column(SqlString(64))
 	scheme_version = Column(SqlString(64))
+
+	# Display properties (`DisplayAttributes`) applied when the tag is rendered
+	meta = Column(mutable_json_type(dbtype=JSONB, nested=True), nullable=True)
 	

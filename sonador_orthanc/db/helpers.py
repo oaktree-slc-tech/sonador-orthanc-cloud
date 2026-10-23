@@ -251,6 +251,8 @@ def orthanc_tagjson(tag, group=None, group_attrs=sonador_api.SONADOR_GROUP_ATTRS
 	
 	if tag.scheme_version:
 		_json['SchemeVersion'] = tag.scheme_version
+	if tag.meta:
+		_json['Meta'] = tag.meta
 	if group:
 		_json['Group'] = pick(group, group_attrs)
   
