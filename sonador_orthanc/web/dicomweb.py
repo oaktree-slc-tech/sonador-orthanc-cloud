@@ -147,7 +147,7 @@ class DicomResourceMixin(ResourceBaseMixin):
 
 		# Retrieve DICOM identifier instance to map to resource
 		di = dcmuid_fetch_dicomidentifier_model(
-			session, ruid, dicom_identifiers_model=self.dicom_identifiers_model)
+			session, ruid, dicom_identifiers_model=self.dicom_identifiers_model, resource_type=self.resource_code)
 		if not di:
 			raise ResourceDoesNotExist(
 				'Unable to retrieve resource model instance, uid=%s does not exist' % ruid,
