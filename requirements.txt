@@ -6,6 +6,12 @@ pydantic
 # Client Dependencies and Secure API
 numpy>=1.22.3
 sonador>=0.4.7,<0.5
+# nameparser is an unpinned dependency of the Sonador client, whose
+# sonador.helpers.valuerep imports `from nameparser import HumanName` (reached at plugin
+# load through sonador.imaging). nameparser 3.0 (2026-11-08) dropped HumanName, so the
+# Python plugin fails to install and Orthanc stops. Cap below 3 until the client moves to
+# the 3.x API.
+nameparser<3
 sonador-orthanc-common>=0.3.0
 
 # Data Streaming
