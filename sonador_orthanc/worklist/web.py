@@ -24,7 +24,7 @@ from ..db.cache import CachePatient, CacheStudy, CacheSeries
 from ..db.worklist import ProcedureStep, StudyReviewerWorklistItem
 from ..db.comments import ImagingStudyComment
 from ..db.helpers import orthanc_worklist_studyjson, dcmuid_fetch_dicomidentifier_model
-from ..db.internal import Resource, DicomIdentifiers
+from ..db.internal import Resource, DicomIdentifiers, ORTHANCDB_STUDY_TYPE
 
 from ..dcmquery.study import CacheStudyQueryMixin
 
@@ -376,7 +376,7 @@ class StudyReviewerWorklistItemRestView(WorklistProcedureHistoryMixin, StudyRevi
 		# Check if ruid is a DICOM ID – if so, get the orthanc ID of the resource
 		if DICOM_UID_REGEX.fullmatch(ruid):
 			di = dcmuid_fetch_dicomidentifier_model(
-				session, ruid, dicom_identifiers_model=DicomIdentifiers)
+				session, ruid, dicom_identifiers_model=DicomIdentifiers, resource_type=ORTHANCDB_STUDY_TYPE)
 			ruid = di.resource.publicid
 		
 		self.init_user_context(self.request)

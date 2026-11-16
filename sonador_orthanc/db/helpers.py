@@ -1,6 +1,6 @@
 import copy, re, fnmatch, logging, datetime
 
-from sqlalchemy.orm import joinedload, aliased
+from sqlalchemy.orm import joinedload, contains_eager, aliased
 from sqlalchemy import and_
 
 from client.utils.object import pick
@@ -78,7 +78,7 @@ def dcmquery2psqlregex(dcmquery, regex_transforms=PSQL_REGEX_TRANSFORMS):
 # Help to map data representations between the Sonador Resource Cache and
 # Orthanc's internal data representation.
 
-def dcmuid_fetch_dicomidentifier_model(session, ruid, dicom_identifiers_model=DicomIdentifiers):
+def dcmuid_fetch_dicomidentifier_model(session, ruid, dicom_identifiers_model=DicomIdentifiers, resource_type=None):
 	'''	Retrieve the resource model mapped to the provided resource UID
 
 		@input session (SQLAlchemty ORM Session): session instance to be used for the
@@ -86,10 +86,22 @@ def dcmuid_fetch_dicomidentifier_model(session, ruid, dicom_identifiers_model=Di
 		@input ruid (str): resource unique identifier
 		@input dicom_identifiers_model (default=db.internal.DicomIdentifiers): database
 			model to be used for mapping the resource UID to the associated resource instance.
+		@input resource_type (int, default=None): Orthanc resource type (ORTHANCDB_*_TYPE) of the
+			resource being requested. The identifier table holds the UIDs of every level, and the
+			same value may be recorded at more than one (a series may reuse its study's UID as its
+			SeriesInstanceUID), so callers which know the level should provide it. If omitted, the
+			first resource holding the value is returned.
 	'''
-	return session.query(dicom_identifiers_model) \
-		.options(joinedload(dicom_identifiers_model.resource)) \
-		.filter_by(value=ruid).first()
+	query = session.query(dicom_identifiers_model).filter_by(value=ruid)
+
+	if resource_type is not None:
+		query = query.join(dicom_identifiers_model.resource) \
+			.filter(Resource.resourcetype == resource_type) \
+			.options(contains_eager(dicom_identifiers_model.resource))
+	else:
+		query = query.options(joinedload(dicom_identifiers_model.resource))
+
+	return query.first()
 
 
 def cache_index_missing_resources(session, resource_model, **kwargs):

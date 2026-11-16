@@ -462,7 +462,8 @@ class SonadorResourceAuthorizationView(OrthancViewValidationMixin, OrthancBaseVi
 		if getattr(auth_request, 'dicom_uid', None) and not getattr(auth_request, 'orthanc_id', None):
 			
 			# Retrieve DICOM resource model from the database and back-fill the Orthanc UID
-			di = dcmuid_fetch_dicomidentifier_model(session, auth_request.dicom_uid)
+			di = dcmuid_fetch_dicomidentifier_model(session, auth_request.dicom_uid,
+				resource_type=RESOURCE_LEVEL_DB_MAPPING.get(auth_request.level))
 			if di and RESOURCE_LEVEL_DB_MAPPING.get(auth_request.level) == di.resource.resourcetype:
 
 				# Initialize new auth request form components and back-filled Orthanc UID
